@@ -203,7 +203,7 @@ impl Injector {
                 send_key(scan, down);
             }
             Msg::Leave => self.release_all(),
-            Msg::Enter | Msg::Ping | Msg::Info { .. } | Msg::Clipboard(_) | Msg::Name(_) => {}
+            Msg::Enter | Msg::Ping | Msg::Info { .. } | Msg::Clipboard(_) | Msg::Name(_) | Msg::Bridge(_) => {}
         }
     }
 
@@ -306,6 +306,8 @@ fn session(
         .map_err(|_| io::Error::other("连接在握手后立即断开"))?;
     log!("wisp: 已连接 {addr}，本机屏幕 {}×{}", inj.w, inj.h);
     let mut status = Status { connected: true, peer: addr.to_string(), since: now(), ..Status::default() };
+    #[cfg(feature = "bridge")]
+    crate::bridge_win::reset();
     report(shell, status.clone());
     last_err.clear();
     Err(rx.run(|msg| match msg {
@@ -314,6 +316,13 @@ fn session(
             log!("wisp: 对方是 {name}");
             status.name = name;
             report(shell, status.clone());
+        }
+        #[cfg(feature = "bridge")]
+        Msg::Bridge(bytes) => {
+            if crate::bridge_win::handle(&bytes, &queue) {
+                status.bridge_until = crate::bridge_win::until();
+                report(shell, status.clone());
+            }
         }
         Msg::Enter => shell.uncover(),
         Msg::Leave => {

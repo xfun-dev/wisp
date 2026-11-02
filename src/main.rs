@@ -10,6 +10,8 @@ macro_rules! log {
     ($($arg:tt)*) => { crate::write_log(format_args!($($arg)*)) };
 }
 
+#[cfg(all(target_os = "macos", feature = "bridge"))]
+mod bridge_mac;
 #[cfg(target_os = "macos")]
 mod control;
 mod discovery;
@@ -25,6 +27,8 @@ mod proto;
 mod server_mac;
 #[cfg(windows)]
 mod client_win;
+#[cfg(all(windows, feature = "bridge"))]
+mod bridge_win;
 #[cfg(windows)]
 mod clipboard_win;
 #[cfg(windows)]
@@ -48,6 +52,49 @@ const USAGE: &str = "\
   wisp pair <6 位配对码>                                       (Windows；和正在等待配对的 Mac 配对)
   wisp install [--quiet] | uninstall [--quiet]                 (Windows；双击 Wisp.exe 等同 install)
 两台电脑的密钥由配对生成，保存在数据目录的 pair 文件里。";
+
+/// `wisp win put <local> <remote> | get <remote> <local> | exec "<command>" [--timeout N]`:
+/// the developer bridge from the command line (RULES.md X4), through the running core.
+#[cfg(all(target_os = "macos", feature = "bridge"))]
+fn win(args: &[String]) -> i32 {
+    use control::hex;
+    // the core reads and writes the local file, from its own working directory: make it absolute here
+    let local = |p: &str| std::env::current_dir().map(|d| d.join(p).to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_string());
+    let line = match args {
+        [op, a, b] if op == "put" => format!("bridge-put {} {}", hex(local(a).as_bytes()), hex(b.as_bytes())),
+        [op, a, b] if op == "get" => format!("bridge-get {} {}", hex(a.as_bytes()), hex(local(b).as_bytes())),
+        [op, cmd, rest @ ..] if op == "exec" => {
+            let timeout = rest.iter().position(|a| a == "--timeout").and_then(|i| rest.get(i + 1)).and_then(|t| t.parse().ok()).unwrap_or(60u32);
+            format!("bridge-exec {timeout} {}", hex(cmd.as_bytes()))
+        }
+        [on] if on == "on" || on == "off" => format!("bridge {on}"),
+        _ => {
+            eprintln!("用法: wisp win on | off | put <本地文件> <远程路径> | get <远程路径> <本地文件> | exec \"<命令>\" [--timeout 秒]");
+            return 2;
+        }
+    };
+    let reply = match control::read_token(&data_dir()).and_then(|t| control::request(&t, control::PORT, &line)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("wisp: 连不上正在运行的 Wisp：{e}");
+            return 1;
+        }
+    };
+    let mut words = reply.splitn(3, ' ');
+    match (words.next(), words.next(), words.next()) {
+        // "ok <code> <hex output>"; with no output the line ends after the code
+        (Some("ok"), Some(code), out) if code.parse::<i32>().is_ok() => {
+            let out = control::unhex(out.unwrap_or("")).unwrap_or_default();
+            let _ = std::io::stdout().write_all(&out);
+            code.parse().unwrap_or(1)
+        }
+        (Some("ok"), _, _) => 0,
+        _ => {
+            eprintln!("{}", reply.trim_start_matches("error "));
+            1
+        }
+    }
+}
 
 static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
 
@@ -112,6 +159,8 @@ fn main() {
             }
             Err(e) => fail(1, &format!("wisp: 连不上正在运行的 Wisp：{e}")),
         },
+        #[cfg(all(target_os = "macos", feature = "bridge"))]
+        Some("win") => std::process::exit(win(&args[1..])),
         #[cfg(windows)]
         Some("client") => client_win::run(opt("--server").as_deref(), port),
         #[cfg(windows)]

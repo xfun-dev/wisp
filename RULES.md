@@ -137,6 +137,16 @@
 | I6 | Mac 卸载：设置窗口菜单“Wisp → 卸载 Wisp…”确认后，停止后台，删除 LaunchAgent、后台程序、`~/.config/wisp`（配对与设置）和日志，把 Wisp.app 移到废纸篓；`Wisp --uninstall` 不询问直接执行。系统设置“辅助功能”里的 wisp 条目会留下（macOS 按路径记录，普通权限删不掉），重新安装后授权沿用 | 实测：卸载后无进程、无残留文件 |
 | I5 | `scripts/release.sh` 跑完验证后在 `dist/` 生成 `Wisp-<版本>.dmg` 和 `Wisp-<版本>.exe` | — |
 
+## 5f. 开发者通道（仅开发版）
+
+| # | 规则 | 保证 |
+|---|---|---|
+| X1 | 开发者通道让已配对的 Mac 在 Windows 上执行命令、收发文件，供部署和测试使用，取代外部远程工具。**只在 `bridge` 编译开关打开时编入**：`scripts/deploy.sh` 给自己的机器装的版本带它，`scripts/release.sh` 发布的不带，并会检查二进制里没有通道代码，发现就拒绝打包 | release.sh 的检查 |
+| X2 | 开启方式：Mac 设置窗口里点两下花盆、一下茶杯（3 秒内），再点一次同样的顺序关闭；或 `wisp win on/off`。只有后台带通道时（状态里有 `bridge=` 字段）这个手势才有反应 | 实测 |
+| X3 | 一次开启最多 8 小时，到期自动关闭（Mac 和 Windows 各自按时间判断，Windows 不接受超过 8 小时的请求）；Windows 只在开启期间执行请求，否则拒绝。命令在独立线程里执行，不耽误键鼠。文件按 12 KB 一块传，每块等对方确认再发下一块，任何时候只有一块在途：大块或不限速会让两端内存上涨（实测 768 KB 块让 Mac 后台到 5 MB；16 KB 块让 Windows 每次多 260 KB 且持续增长；12 KB 只多 56 KB 且稳定）。连接一断，所有等待中的请求立即失败 | `every_bridge_message_round_trips`、`the_bridge_never_stays_open_longer_than_eight_hours`、`a_piece_fits_well_inside_a_frame` |
+| X4 | 命令行：`wisp win put <本地> <远程>`、`get <远程> <本地>`、`exec "<命令>" [--timeout 秒]`（经 cmd.exe，输出与错误合并，最多 64 KB，退出码原样返回，超时为 -2）。`scripts/local.env` 的 `WISP_WIN_BRIDGE` 指向它 | 实测 |
+| X5 | 通道开着时一定看得见：Mac 茶杯的热气变青色、墙上写“开发者通道已开启 · 剩余时间”；Windows 状态窗口同样显示 | `an_open_bridge_is_always_on_show` |
+
 ## 6. 资源预算（产品卖点，视同功能）
 
 | # | 规则 |

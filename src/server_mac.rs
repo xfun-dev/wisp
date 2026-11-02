@@ -292,6 +292,16 @@ pub fn run(opts: Options) -> io::Result<()> {
         }
         (Err(e), _) | (_, Err(e)) => log!("wisp: 设置端口不可用（设置窗口无法连接）：{e}"),
     }
+    #[cfg(feature = "bridge")]
+    {
+        // the developer bridge hands its messages to whichever PC is connected; the
+        // queue is cloned out of the lock so a full queue never holds it (RULES.md X3)
+        let link = link.clone();
+        crate::bridge_mac::set_sender(Box::new(move |msg| {
+            let tx = link.lock().unwrap().as_ref().map(|l| l.tx.clone());
+            tx.is_some_and(|tx| tx.send(msg).is_ok())
+        }));
+    }
     std::thread::spawn({
         let (link, clipboard, live) = (link.clone(), clipboard.clone(), opts.live.clone());
         move || accept_loop(listener, link, clipboard, name, live)
@@ -785,6 +795,10 @@ fn accept_loop(
             if current(&mut l, id).is_some() {
                 *l = None;
             }
+            // even when a newer link already took its place: requests sent over this one
+            // will never be answered, and must not wait out their timeout (RULES.md X3)
+            #[cfg(feature = "bridge")]
+            crate::bridge_mac::on_disconnect();
         });
     }
 }
@@ -808,6 +822,8 @@ fn serve_client(
     let tx = tx.spawn();
     let _ = tx.send(Msg::Name(name.to_string()));
     *link.lock().unwrap() = Some(Link { id, peer: peer.to_string(), tx, w: w as f64, h: h as f64, closer });
+    #[cfg(feature = "bridge")]
+    crate::bridge_mac::on_connect();
 
     Err(rx.run(|msg| match msg {
         Msg::Info { w, h } => {
@@ -819,6 +835,8 @@ fn serve_client(
         Msg::Clipboard(text) => {
             let _ = clipboard.send(Job::Pull(text));
         }
+        #[cfg(feature = "bridge")]
+        Msg::Bridge(bytes) => crate::bridge_mac::on_message(&bytes),
         _ => {}
     }))
 }

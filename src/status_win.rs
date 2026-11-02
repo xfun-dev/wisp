@@ -482,6 +482,10 @@ fn draw_still(c: &Canvas, ui: &Ui) {
     c.fill(&Path::ellipse(22.0, 23.0, 10.0, 10.0), rgb(dot));
     c.text(&ui.view.headline, &ui.fonts.head, rgb(INK), 44.0, 14.0, W - 60.0, 28.0, Align::Left);
     c.paragraph(&ui.view.detail, &ui.fonts.body, rgb(INK_SOFT), 44.0, 42.0, 250.0, 36.0);
+    // the developer bridge is never open unnoticed (RULES.md X5)
+    if let Some(line) = &ui.view.bridge {
+        c.text(line, &ui.fonts.link, rgb(TEAL), 44.0, 76.0, 300.0, 18.0, Align::Left);
+    }
 
     // the drawer and its tray
     c.fill(&Path::poly(&[(0.0, DRAWER), (W, DRAWER), (W, H), (0.0, H)]), rgb(WOOD));

@@ -231,6 +231,8 @@ struct Status: Equatable {
     var code = ""
     var codeSecondsLeft = 0
     var codeTriesLeft = 0
+    /// developer bridge seconds left; nil in a core built without it (RULES.md X1)
+    var bridge: Int?
 
     init?(reply: String) {
         guard reply.hasPrefix("ok\t") else { return nil }
@@ -250,6 +252,7 @@ struct Status: Equatable {
         code = fields["pairing"] ?? ""
         codeSecondsLeft = fields["pair_left"].flatMap(Int.init) ?? 0
         codeTriesLeft = fields["pair_tries"].flatMap(Int.init) ?? 0
+        bridge = fields["bridge"].flatMap(Int.init)
     }
 }
 
@@ -470,11 +473,17 @@ struct DeskScene: NSViewRepresentable {
     let mood: Mood
     let edge: String
     let name: String
+    /// the developer bridge is open: the steam over the mug turns teal
+    var bridge = false
+    /// the hidden switch: plant, plant, mug (RULES.md X2); nil when the core has no bridge
+    var secret: (() -> Void)?
 
     func makeNSView(context: Context) -> DeskLayers { DeskLayers() }
 
     func updateNSView(_ view: DeskLayers, context: Context) {
+        view.secret = secret
         view.show(mood: mood, edge: edge, name: name)
+        view.showBridge(bridge)
         let side = ["left": "左侧", "right": "右侧"][edge] ?? "上方"
         view.setAccessibilityLabel("书桌上：这台 Mac，另一台电脑的屏幕在它的\(side)")
     }
@@ -485,6 +494,10 @@ struct DeskScene: NSViewRepresentable {
 }
 
 final class DeskLayers: NSView {
+    var secret: (() -> Void)?
+    private enum Spot { case plant, mug }
+    private var taps: [(Spot, Date)] = []
+    private let steam = CAShapeLayer()
     private let monitor = CALayer()
     private let monitorScreen = CAGradientLayer()
     private let monitorName = CATextLayer()
@@ -806,7 +819,6 @@ final class DeskLayers: NSView {
     }
 
     private func buildMug(_ root: CALayer) {
-        let steam = CAShapeLayer()
         let s = CGMutablePath()
         s.move(to: CGPoint(x: 92, y: 318)); s.addCurve(to: CGPoint(x: 92, y: 292), control1: CGPoint(x: 86, y: 308), control2: CGPoint(x: 98, y: 302))
         s.move(to: CGPoint(x: 102, y: 316)); s.addCurve(to: CGPoint(x: 102, y: 290), control1: CGPoint(x: 96, y: 306), control2: CGPoint(x: 108, y: 300))
@@ -840,6 +852,31 @@ final class DeskLayers: NSView {
     }
 
     // MARK: state
+
+    func showBridge(_ on: Bool) {
+        let color = on ? c(Clay.tealGlow, 0.95) : c(0xFFFFFF, 0.7)
+        guard steam.strokeColor != color else { return }
+        steam.strokeColor = color
+    }
+
+    /// Clicks on the plant and the mug feed the hidden switch; any other press, or a drag,
+    /// moves the window as before.
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let origin = window?.frame.origin
+        window?.performDrag(with: event)
+        guard secret != nil, window?.frame.origin == origin else { return }
+        let plantBox = CGRect(x: plant.position.x, y: 180, width: 80, height: 125)
+        let mugBox = CGRect(x: 72, y: 284, width: 56, height: 78)
+        let spot: Spot? = plantBox.contains(p) ? .plant : mugBox.contains(p) ? .mug : nil
+        guard let spot else { taps.removeAll(); return }
+        taps.append((spot, Date()))
+        taps = Array(taps.suffix(3)).filter { Date().timeIntervalSince($0.1) < 3 }
+        if taps.map(\.0) == [.plant, .plant, .mug] {
+            taps.removeAll()
+            secret?()
+        }
+    }
 
     func show(mood: Mood, edge: String, name: String) {
         let first = shown == nil
@@ -961,6 +998,12 @@ struct WallSign: View {
                     .padding(.leading, 20)
                     .frame(maxWidth: 260, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if let left = s?.bridge, left > 0 {
+                Text("开发者通道已开启 · 剩 \(left / 3600) 小时 \(left % 3600 / 60) 分")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color(hex: Clay.teal))
+                    .padding(.leading, 20)
             }
         }
         .animation(.easeOut(duration: 0.3), value: mood)
@@ -1256,7 +1299,9 @@ struct SettingsView: View {
         let s = core.status
         VStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
-                DeskScene(mood: s.map(Mood.init) ?? .searching, edge: s?.edge ?? "top", name: s?.paired ?? "")
+                DeskScene(mood: s.map(Mood.init) ?? .searching, edge: s?.edge ?? "top", name: s?.paired ?? "",
+                          bridge: (s?.bridge ?? 0) > 0,
+                          secret: s?.bridge.map { left in { core.send(["bridge", left > 0 ? "off" : "on"]) } })
                 WallSign(s: s, problem: core.problem)
                     .padding(.leading, 24)
                     .padding(.top, 16)

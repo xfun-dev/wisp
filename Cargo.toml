@@ -6,6 +6,10 @@ description = "Featherweight keyboard & mouse sharing across computers"
 license = "MIT"
 repository = "https://github.com/xfun-dev/wisp"
 
+[features]
+# the developer bridge (RULES.md X1): scripts/deploy.sh builds with it, releases never do
+bridge = []
+
 [dependencies]
 chacha20poly1305 = { version = "0.10.1", default-features = false }
 sha2 = { version = "0.10.8", default-features = false }

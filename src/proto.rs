@@ -26,6 +26,8 @@ const MAX_SMALL: usize = 9;
 pub const MAX_CLIPBOARD: usize = 1 << 20;
 const CLIPBOARD: u8 = 10;
 const NAME: u8 = 11;
+/// opaque developer-bridge payload (logic::bridge); a build without the feature ignores it
+const BRIDGE: u8 = 12;
 /// longest machine name sent, in UTF-8 bytes
 #[cfg(any(test, target_os = "macos"))]
 const MAX_NAME: usize = 128;
@@ -65,6 +67,8 @@ pub enum Msg {
     Clipboard(String),
     /// server -> client: the server's computer name, at most MAX_NAME bytes
     Name(String),
+    /// developer bridge, both directions (RULES.md X1), at most MAX_CLIPBOARD bytes
+    Bridge(Vec<u8>),
 }
 
 impl Msg {
@@ -104,24 +108,26 @@ impl Msg {
                 put(&[9]);
                 put(&steps.to_le_bytes());
             }
-            Msg::Clipboard(_) | Msg::Name(_) => unreachable!("text messages are framed by Sender::send"),
+            Msg::Clipboard(_) | Msg::Name(_) | Msg::Bridge(_) => unreachable!("variable-length messages are framed by Sender::send"),
         }
         n
     }
 
-    /// The tag and text of a variable-length message; None for fixed-size ones.
-    fn text(&self) -> Option<(u8, &str)> {
+    /// The tag and bytes of a variable-length message; None for fixed-size ones.
+    fn payload(&self) -> Option<(u8, &[u8])> {
         match self {
-            Msg::Clipboard(t) => Some((CLIPBOARD, t)),
-            Msg::Name(t) => Some((NAME, t)),
+            Msg::Clipboard(t) => Some((CLIPBOARD, t.as_bytes())),
+            Msg::Name(t) => Some((NAME, t.as_bytes())),
+            Msg::Bridge(b) => Some((BRIDGE, b)),
             _ => None,
         }
     }
 
-    fn from_text(tag: u8, text: String) -> Option<Msg> {
+    fn from_payload(tag: u8, bytes: Vec<u8>) -> Option<Msg> {
         match tag {
-            CLIPBOARD => Some(Msg::Clipboard(text)),
-            NAME => Some(Msg::Name(text)),
+            CLIPBOARD => Some(Msg::Clipboard(String::from_utf8(bytes).ok()?)),
+            NAME => Some(Msg::Name(String::from_utf8(bytes).ok()?)),
+            BRIDGE => Some(Msg::Bridge(bytes)),
             _ => None,
         }
     }
@@ -140,7 +146,7 @@ impl Msg {
             7 => Msg::Wheel { dx: i32_at(1)?, dy: i32_at(5)? },
             8 => Msg::Key { scan: u16_at(1)?, down: *b.get(3)? != 0 },
             9 => Msg::Zoom { steps: i32_at(1)? },
-            tag @ (CLIPBOARD | NAME) => Msg::from_text(tag, String::from_utf8(b[1..].to_vec()).ok()?)?,
+            tag @ (CLIPBOARD | NAME | BRIDGE) => Msg::from_payload(tag, b[1..].to_vec())?,
             _ => return None,
         })
     }
@@ -198,13 +204,13 @@ impl Sender {
     fn send(&mut self, msg: &Msg) -> io::Result<()> {
         let mut small = [0u8; LEN_LEN + MAX_SMALL + TAG_LEN];
         let mut big;
-        let frame: &mut [u8] = match msg.text() {
-            Some((tag, text)) => {
-                debug_assert!(text.len() <= MAX_CLIPBOARD, "oversized text must be filtered before sending");
-                big = Vec::with_capacity(LEN_LEN + 1 + text.len() + TAG_LEN);
+        let frame: &mut [u8] = match msg.payload() {
+            Some((tag, bytes)) => {
+                debug_assert!(bytes.len() <= MAX_CLIPBOARD, "oversized payloads must be filtered before sending");
+                big = Vec::with_capacity(LEN_LEN + 1 + bytes.len() + TAG_LEN);
                 big.extend_from_slice(&[0; LEN_LEN]);
                 big.push(tag);
-                big.extend_from_slice(text.as_bytes());
+                big.extend_from_slice(bytes);
                 big.extend_from_slice(&[0; TAG_LEN]);
                 &mut big
             }
@@ -240,14 +246,13 @@ impl Receiver {
             let body = self.open(&mut small[..len])?;
             return Msg::decode_small(body).ok_or_else(|| bad("unknown message"));
         }
-        // only text messages are larger; decode them in their own buffer, no copy
+        // only variable-length messages are larger; decode them in their own buffer, no copy
         let mut big = vec![0u8; len];
         let body_len = self.open(&mut big)?.len();
         let tag = big[0];
         big.truncate(body_len);
         big.drain(..1);
-        let text = String::from_utf8(big).map_err(|_| bad("text is not UTF-8"))?;
-        Msg::from_text(tag, text).ok_or_else(|| bad("unknown message"))
+        Msg::from_payload(tag, big).ok_or_else(|| bad("unknown message (or text that is not UTF-8)"))
     }
 
     /// Reads a frame of `frame.len()` bytes into `frame`, authenticates and

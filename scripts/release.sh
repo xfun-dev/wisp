@@ -44,5 +44,12 @@ hdiutil create -quiet -volname "Wisp $version" -srcfolder dist/stage -fs HFS+ -f
 cargo build --release --quiet --target x86_64-pc-windows-gnu
 cp target/x86_64-pc-windows-gnu/release/wisp.exe dist/Wisp-$version.exe
 
+# a release never carries the developer bridge (RULES.md X1)
+for f in $app/Contents/Helpers/wisp dist/Wisp-$version.exe; do
+  # byte-wise (LC_ALL=C, -a): in a UTF-8 locale grep may not read a binary at all
+  if LC_ALL=C grep -qa "bridge-exec" $f || LC_ALL=C grep -qa "开发者通道" $f; then print -u2 "release: $f contains the developer bridge"; exit 1; fi
+done
+print "release: no developer bridge in the binaries"
+
 rm -rf dist/stage dist/Wisp-arm64 dist/Wisp-x86_64 dist/WispMenu-arm64 dist/WispMenu-x86_64
 ls -la dist

@@ -11,22 +11,26 @@ MAC_BUDGET_KB=4096   # phys_footprint of the Mac server
 WIN_BUDGET_KB=2048   # private bytes of the Windows client
 # the Windows machine is reached through a bridge configured in scripts/local.env (see README)
 [[ -f scripts/local.env ]] && source scripts/local.env
-BRIDGE=(${=WISP_WIN_BRIDGE:-})
+# split like the shell would, so a quoted path with spaces stays one word
+BRIDGE=(${(Q)${(z)WISP_WIN_BRIDGE:-}})
 
 fail() { print -u2 "verify: FAIL: $*"; exit 1; }
 pass() { print "verify: ok: $*"; }
 
-cargo test --release --quiet 2>&1 | tail -n 3 | grep -q "test result: ok" || { cargo test --release; fail "tests"; }
+cargo test --release --quiet --features bridge 2>&1 | tail -n 3 | grep -q "test result: ok" || { cargo test --release --features bridge; fail "tests"; }
 pass "tests"
 
-for target in "" "x86_64-pc-windows-gnu"; do
-  name=${target:-macos}
+# each platform with and without the developer bridge (RULES.md X1); the plain build
+# comes last, so target/ holds what a release ships
+for target in "" "x86_64-pc-windows-gnu"; do for feature in bridge ""; do
+  name=${target:-macos}${feature:+ +$feature}
   args=(--release --message-format short)
   [[ -n $target ]] && args+=(--target $target)
+  [[ -n $feature ]] && args+=(--features $feature)
   out=$(cargo build "${args[@]}" 2>&1) || { print -u2 "$out"; fail "build $name"; }
   if print -r -- "$out" | grep -q "warning:"; then print -u2 "$out"; fail "warnings in $name build"; fi
   pass "build $name, no warnings"
-done
+done; done
 
 # the settings window: build the bundle deploy.sh installs
 app=target/Wisp.app

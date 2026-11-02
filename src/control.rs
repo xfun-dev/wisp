@@ -64,6 +64,29 @@ pub enum Command {
     Unpair,
     /// test only: block the event thread for this many milliseconds (RULES.md S4)
     DebugStall(u64),
+    /// developer bridge (RULES.md X1): open for 8 hours, or close
+    #[cfg(feature = "bridge")]
+    Bridge(bool),
+    /// developer bridge: run a command on the PC (timeout in seconds, hex command)
+    #[cfg(feature = "bridge")]
+    BridgeExec(u32, String),
+    /// developer bridge: local file to the PC, PC file to local (hex paths)
+    #[cfg(feature = "bridge")]
+    BridgePut(String, String),
+    #[cfg(feature = "bridge")]
+    BridgeGet(String, String),
+}
+
+/// Lower-case hex, so any text or path fits one word of a command line.
+#[cfg(feature = "bridge")]
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(feature = "bridge")]
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    (s.len() % 2 == 0).then_some(())?;
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -77,6 +100,19 @@ pub fn parse(line: &str) -> Result<Command, String> {
         ["pair-cancel"] => Ok(Command::PairCancel),
         ["unpair"] => Ok(Command::Unpair),
         ["debug-stall", ms] => ms.parse().map(Command::DebugStall).map_err(|_| "用法：debug-stall 毫秒".into()),
+        #[cfg(feature = "bridge")]
+        ["bridge", on @ ("on" | "off")] => Ok(Command::Bridge(*on == "on")),
+        #[cfg(feature = "bridge")]
+        ["bridge-exec", t, cmd] => {
+            let text = unhex(cmd).and_then(|b| String::from_utf8(b).ok()).ok_or("命令要用十六进制")?;
+            Ok(Command::BridgeExec(t.parse().map_err(|_| "超时要是秒数")?, text))
+        }
+        #[cfg(feature = "bridge")]
+        [op @ ("bridge-put" | "bridge-get"), a, b] => {
+            let path = |h: &str| unhex(h).and_then(|b| String::from_utf8(b).ok()).ok_or("路径要用十六进制");
+            let (a, b) = (path(a)?, path(b)?);
+            Ok(if *op == "bridge-put" { Command::BridgePut(a, b) } else { Command::BridgeGet(a, b) })
+        }
         ["set", kv] => kv.split_once('=').map(|(k, v)| Command::Set(k.into(), v.into())).ok_or("用法：set 设置=值".into()),
         _ => Err(format!("不认识的命令：{}", line.trim())),
     }
@@ -161,6 +197,12 @@ impl Live {
                 drop_link();
             }
             Command::Status | Command::Quit | Command::DebugStall(_) => {}
+            #[cfg(feature = "bridge")]
+            Command::Bridge(on) => {
+                crate::bridge_mac::set(on).map_err(|e| format!("开发者通道：{e}"))?;
+            }
+            #[cfg(feature = "bridge")]
+            Command::BridgeExec(..) | Command::BridgePut(..) | Command::BridgeGet(..) => {}
         }
         Ok("ok".into())
     }
@@ -175,13 +217,38 @@ impl Live {
             None => (String::new(), 0, 0),
         };
         format!(
-            "{connection}\tpaused={}\tedge={}\tspeed={}\tscroll={}\tpaired={paired}\tpairing={code}\tpair_left={left}\tpair_tries={tries}",
+            "{connection}\tpaused={}\tedge={}\tspeed={}\tscroll={}\tpaired={paired}\tpairing={code}\tpair_left={left}\tpair_tries={tries}{}",
             self.paused(),
             s.edge.name(),
             s.speed,
-            s.scroll
+            s.scroll,
+            bridge_field()
         )
     }
+}
+
+/// `\tbridge=<seconds left>` in builds with the developer bridge, nothing otherwise:
+/// the settings window offers its hidden switch only when the field is there.
+fn bridge_field() -> String {
+    #[cfg(feature = "bridge")]
+    return format!("\tbridge={}", crate::bridge_mac::left());
+    #[cfg(not(feature = "bridge"))]
+    String::new()
+}
+
+/// Runs a long developer-bridge request on its own thread and answers on `out`,
+/// so the port keeps serving the settings window meanwhile (RULES.md X3).
+#[cfg(feature = "bridge")]
+fn bridge_request(cmd: Command, mut out: TcpStream) {
+    std::thread::spawn(move || {
+        let reply = match cmd {
+            Command::BridgeExec(t, c) => crate::bridge_mac::exec(&c, t).map(|(code, o)| format!("ok {code} {}", hex(&o))),
+            Command::BridgePut(a, b) => crate::bridge_mac::put(&a, &b).map(|_| "ok".to_string()),
+            Command::BridgeGet(a, b) => crate::bridge_mac::get(&a, &b).map(|_| "ok".to_string()),
+            _ => Ok("ok".to_string()),
+        };
+        let _ = writeln!(out, "{}", reply.unwrap_or_else(|e| format!("error {}", e.to_string().replace('\n', " "))));
+    });
 }
 
 /// What the control port needs from the network side.
@@ -212,7 +279,13 @@ fn session(stream: TcpStream, token: &str, live: &Live, link: &Link) -> io::Resu
         return writeln!(out, "error 认证失败");
     }
     for line in lines {
-        let reply = match parse(&line?) {
+        let cmd = parse(&line?);
+        #[cfg(feature = "bridge")]
+        if let Ok(c @ (Command::BridgeExec(..) | Command::BridgePut(..) | Command::BridgeGet(..))) = cmd {
+            // no read timeout for the answer's sake; this session ends here
+            return Ok(bridge_request(c, out));
+        }
+        let reply = match cmd {
             Ok(Command::Status) => format!("ok\t{}", live.status(&(link.describe)())),
             Ok(Command::Quit) => {
                 writeln!(out, "ok")?;
@@ -300,10 +373,10 @@ mod tests {
         assert_eq!(request("secret", port, "set edge=left").unwrap(), "ok");
         assert_eq!(request("secret", port, "pause").unwrap(), "ok");
         assert!(request("secret", port, "set speed=99").unwrap().starts_with("error 鼠标速度"));
-        assert_eq!(
-            request("secret", port, "status").unwrap(),
-            "ok\tstate=waiting\tpaused=true\tedge=left\tspeed=1\tscroll=3\tpaired=\tpairing=\tpair_left=0\tpair_tries=0"
-        );
+        let status = request("secret", port, "status").unwrap();
+        let fields = "ok\tstate=waiting\tpaused=true\tedge=left\tspeed=1\tscroll=3\tpaired=\tpairing=\tpair_left=0\tpair_tries=0";
+        // a build with the developer bridge adds `\tbridge=<seconds>` (RULES.md X1)
+        assert!(status == fields || status.strip_prefix(fields).is_some_and(|rest| rest.starts_with("\tbridge=")), "{status}");
 
         let reloaded = Live::load(dir.clone());
         assert_eq!(reloaded.settings().edge.name(), "left", "settings survive a restart");
