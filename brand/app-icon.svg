@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- macOS icon grid: an 824 body at 100, corner 185. Rendered by scripts/brand.swift. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1D2637"/><stop offset="1" stop-color="#0A0E15"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#C6FFF5"/><stop offset="1" stop-color="#2FD5BE"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="104" y="104" width="816" height="816" rx="181" fill="none" stroke="#FFFFFF" stroke-opacity=".08" stroke-width="8"/>
+  <g transform="translate(100 100) scale(8.24)">
+    <path d="M16 38 C22 60 26 72 33 72 C41 72 43 48 50 48 C57 48 59 72 67 72 C75 72 79 57 83 43 C86 32 80 23 72 28"
+          fill="none" stroke="url(#ink)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M72 28 C66 32 67 39 74 38" fill="none" stroke="#2FD5BE" stroke-width="4.5" stroke-linecap="round"/>
+  </g>
+</svg>

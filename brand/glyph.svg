@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Wisp · 一缕: one stroke drawing a soft W that curls off like smoke.
+       The same path data lives in scripts/brand.swift, which renders every icon. -->
+  <path d="M16 38 C22 60 26 72 33 72 C41 72 43 48 50 48 C57 48 59 72 67 72 C75 72 79 57 83 43 C86 32 80 23 72 28"
+        fill="none" stroke="#0C1018" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M72 28 C66 32 67 39 74 38" fill="none" stroke="#0C1018" stroke-width="4.5" stroke-linecap="round" opacity=".55"/>
+</svg>

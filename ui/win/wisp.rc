@@ -1,0 +1,2 @@
+// Compiled into wisp.exe by build.rs: the exe, Start menu and window icon.
+1 ICON "wisp.ico"
