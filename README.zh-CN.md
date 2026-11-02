@@ -57,6 +57,8 @@ scripts/release.sh    # 生成 dist/Wisp-<版本>.dmg 和 dist/Wisp-<版本>.exe
 
 用 `--features bridge` 编译（`scripts/deploy.sh` 默认如此）的版本带一条开发者通道：已配对的 Mac 可以通过现有的加密连接在 Windows 上执行命令、收发文件，部署和测试不需要额外的远程工具。
 
+它主要是为 AI 助手准备的：在 Mac 上工作的 AI（例如 Claude Code）可以通过它直接操作这台 Windows 电脑，完成任何需要在 Windows 上做的事。
+
 - 开启：在 Mac 设置窗口中点两下花盆、再点一下茶杯（或 `wisp win on`）；同样操作关闭，8 小时后自动关闭
 - 开启期间两端都有提示：Mac 茶杯的热气变为青色，两边窗口都显示"开发者通道已开启"和剩余时间
 - 使用：`wisp win exec "<命令>" [--timeout 秒]`、`wisp win put <本地> <远程>`、`wisp win get <远程> <本地>`

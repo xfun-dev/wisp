@@ -59,6 +59,8 @@ The behaviour spec is [RULES.md](RULES.md) (in Chinese); every rule names the te
 
 Builds made with `--features bridge` (as `scripts/deploy.sh` does) carry a developer bridge: the paired Mac can run commands and move files on the Windows PC over the existing encrypted link, so deploying and testing need no other remote tool.
 
+It is made mainly for AI assistants: an AI working on the Mac (Claude Code, for example) can use it to operate the Windows PC directly and do anything that needs doing there.
+
 - Turn it on: in the Mac settings window, click the plant twice and then the mug (or run `wisp win on`); the same again turns it off, and it closes by itself after 8 hours
 - While it is on, both sides show it: the steam over the Mac's mug turns teal, and both windows say the bridge is open and for how long
 - Use: `wisp win exec "<command>" [--timeout seconds]`, `wisp win put <local> <remote>`, `wisp win get <remote> <local>`
