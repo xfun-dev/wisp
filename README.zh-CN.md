@@ -28,7 +28,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/xfun-dev/wisp/releases/latest) 下载。
+从 [Releases](https://github.com/xfun-dev/wisp/releases/latest) 下载。普通版即可满足键鼠共享；需要[开发者通道](#开发者通道开发者版)的话，两台电脑都下载文件名带 `-dev` 的开发者版。
 
 **Mac**（macOS 14+，Apple 芯片和 Intel）
 1. 打开 `Wisp-<版本>.dmg`，把 Wisp 拖进"应用程序"
@@ -53,7 +53,7 @@ scripts/release.sh    # 生成 dist/Wisp-<版本>.dmg 和 dist/Wisp-<版本>.exe
 
 行为规格见 [RULES.md](RULES.md)，每条规则都注明了对应的测试。
 
-### 开发者通道（仅开发版）
+### 开发者通道（开发者版）
 
 用 `--features bridge` 编译（`scripts/deploy.sh` 默认如此）的版本带一条开发者通道：已配对的 Mac 可以通过现有的加密连接在 Windows 上执行命令、收发文件，部署和测试不需要额外的远程工具。
 
@@ -63,7 +63,7 @@ scripts/release.sh    # 生成 dist/Wisp-<版本>.dmg 和 dist/Wisp-<版本>.exe
 - 开启期间两端都有提示：Mac 茶杯的热气变为青色，两边窗口都显示"开发者通道已开启"和剩余时间
 - 使用：`wisp win exec "<命令>" [--timeout 秒]`、`wisp win put <本地> <远程>`、`wisp win get <远程> <本地>`
 
-Releases 中的安装包不包含此功能，`scripts/release.sh` 会检查并拒绝打包含有它的版本。
+Releases 中文件名带 `-dev` 的是开发者版，带此功能；不带 `-dev` 的普通版不含。需要两台电脑都装开发者版。
 
 ## 许可
 

@@ -30,7 +30,7 @@ The interface is currently in Chinese.
 
 ## Install
 
-Download from [Releases](https://github.com/xfun-dev/wisp/releases/latest).
+Download from [Releases](https://github.com/xfun-dev/wisp/releases/latest). The plain build is all you need for sharing the keyboard and trackpad; for the [developer bridge](#developer-bridge-developer-builds), download the `-dev` build on both computers.
 
 **Mac** (macOS 14+, Apple silicon and Intel)
 1. Open `Wisp-<version>.dmg` and drag Wisp into Applications
@@ -55,7 +55,7 @@ scripts/release.sh    # makes dist/Wisp-<version>.dmg and dist/Wisp-<version>.ex
 
 The behaviour spec is [RULES.md](RULES.md) (in Chinese); every rule names the test that covers it.
 
-### Developer bridge (development builds only)
+### Developer bridge (developer builds)
 
 Builds made with `--features bridge` (as `scripts/deploy.sh` does) carry a developer bridge: the paired Mac can run commands and move files on the Windows PC over the existing encrypted link, so deploying and testing need no other remote tool.
 
@@ -65,7 +65,7 @@ It is made mainly for AI assistants: an AI working on the Mac (Claude Code, for 
 - While it is on, both sides show it: the steam over the Mac's mug turns teal, and both windows say the bridge is open and for how long
 - Use: `wisp win exec "<command>" [--timeout seconds]`, `wisp win put <local> <remote>`, `wisp win get <remote> <local>`
 
-The installers in Releases do not include it; `scripts/release.sh` checks the binaries and refuses to package a build that does.
+In Releases, the files ending in `-dev` are the developer builds with the bridge; the plain ones do not have it. Both computers need the developer build.
 
 ## License
 
