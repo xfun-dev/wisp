@@ -20,6 +20,7 @@ if [[ $target == all || $target == mac ]]; then
   # the core goes inside the app, and the app installs it (RULES.md I4)
   app=target/Wisp.app
   codesign --force -s "$SIGN_ID" -i "$LABEL" $app/Contents/Helpers/wisp
+  codesign --force -s "$SIGN_ID" -i "$LABEL.menu" $app/Contents/Helpers/WispMenu
   codesign --force -s "$SIGN_ID" $app
   pkill -f "/Applications/Wisp.app/Contents/MacOS/Wisp" || true
   rm -rf /Applications/Wisp.app && cp -R $app /Applications/

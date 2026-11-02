@@ -91,7 +91,7 @@
 
 | # | 规则 | 保证 |
 |---|---|---|
-| U1 | **Mac 不常驻图标**：界面是单独的进程，从启动台按需打开，关掉就退出（实测最小的 Mac 菜单栏图标就要 10 MB，核心才 2.8 MB）。**Windows 有托盘图标**（否则关掉状态窗口后什么都看不到；实测托盘图标只多约 0.19 MB），见 U10；状态窗口仍按需打开 | — |
+| U1 | **Mac 默认不常驻图标**：界面是单独的进程，从启动台按需打开，关掉就退出（实测最小的 Mac 菜单栏图标就要 10 MB，核心才 2.8 MB）；菜单栏图标是可选项，见 U12。**Windows 有托盘图标**（否则关掉状态窗口后什么都看不到；实测托盘图标只多约 0.19 MB），见 U10；状态窗口仍按需打开 | — |
 | U2 | 第一版设置只有四项：**连接状态、屏幕方向（上/左/右）、鼠标速度和滚动速度、暂停切屏**；配对、开机自启开关等以后真需要再加 | — |
 | U3 | 设置属于控制方（Mac），存在 Mac 数据目录的 `config` 文件里，修改后立即生效，不用重启 | `settings_round_trip_and_reject_nonsense` |
 | U4 | **暂停不保存**：Wisp 或电脑重启后自动恢复切屏；暂停期间光标不会切到对方，已经在对方屏幕上的不受影响 | — |
@@ -99,6 +99,7 @@
 | U9 | Mac 连上后发送自己的“电脑名称”（系统设置里的名字，最多 128 字节，按字符截断），Windows 状态窗口显示“已连接 <名字>”，下方托盘显示连接时长和 Mac 地址 | `names_are_cut_on_a_character_boundary`、`status_window_words_for_each_state` |
 | U10 | Windows 托盘图标由后台进程画出（不带图片文件）：**绿点**=已连接、**橙点**=寻找中；悬停显示“Wisp：<状态窗口第一行>”；单击打开状态窗口（已开着就切到前面）；右键菜单只有“打开状态窗口”“退出 Wisp”（退出时连同打开着的状态窗口一起关掉；只有后台意外崩溃时状态窗口才会留着显示“没有在运行”；下次登录或从开始菜单打开时再启动）；资源管理器重启后自动重新加上。与指针隐藏共用同一个界面线程 | `tray_dot_is_round_coloured_and_premultiplied` |
 | U11 | **主动退出两端对齐**：Mac 在设置窗口底部点“退出 Wisp”（或 `wisp ctl quit`），后台以正常方式退出并保持退出，设置窗口一起关掉；Windows 从托盘退出（U10）。再从启动台/开始菜单打开 Wisp 时，后台没在运行就先启动它。意外崩溃仍自动重启（LaunchAgent 的 KeepAlive 只在非正常退出时生效），下次登录照常自启 | `control_commands_parse_and_reject_unknown` |
+| U12 | **Mac 菜单栏图标可选，默认关闭**：设置窗口“菜单栏图标”开关打开后，单独的小进程 `WispMenu`（只用 AppKit，`~/Library/Application Support/Wisp/WispMenu`，LaunchAgent `fun.xfun.wisp.menu`）立即出现并随登录启动；关掉即移除。图标是“一缕”标志的单色模板图（随菜单栏显示为白或黑，与系统图标一致），暂停或没在运行时变淡；菜单：状态、暂停切屏（或“启动 Wisp”）、打开 Wisp 设置…、退出 Wisp。它每 2 秒直接经控制端口（U6）问一次状态，不另起进程。实测约 10 MB、CPU 0.1%，开关旁注明多占内存 | 实测：菜单内容、暂停切换生效 |
 | U8 | Windows 后台进程每次状态变化时整份重写 `%LOCALAPPDATA%\Wisp\status`（先写临时文件再改名），并在整个生命周期持有命名互斥量 `Local\WispClient`；窗口靠互斥量判断后台是否在运行，所以后台崩溃后旧文件不会被当成“已连接” | `status_file_round_trips`、`status_window_words_for_each_state` |
 | U6 | 界面通过本机控制端口 `127.0.0.1:24802` 跟核心通信，只接受本机连接，用本机令牌 `ctl-token` 认证（P7）；协议是一行一条的文本命令（`status` / `set k=v` / `pause` / `resume` / `quit` / `pair` / `pair-cancel` / `unpair`），状态行用制表符分隔字段（名字里有空格），命令行工具 `wisp ctl` 也走这里 | `control_commands_parse_and_reject_unknown` |
 | U7 | 数值有安全范围：速度 0.2–5，滚动 0.5–10；超出范围或格式不对的设置被拒绝，不会写进配置 | `settings_round_trip_and_reject_nonsense` |

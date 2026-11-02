@@ -37,6 +37,9 @@ cp ui/mac/AppIcon.icns ui/mac/fonts/* $app/Contents/Resources/
 out=$(swiftc -O -parse-as-library -target arm64-apple-macos14 ui/mac/WispSettings.swift -o $app/Contents/MacOS/Wisp 2>&1) || { print -u2 "$out"; fail "build settings window"; }
 [[ -z $out ]] || { print -u2 "$out"; fail "warnings in settings window build"; }
 pass "build settings window, no warnings"
+out=$(swiftc -O -parse-as-library -target arm64-apple-macos14 ui/mac/WispMenuBar.swift -o $app/Contents/Helpers/WispMenu 2>&1) || { print -u2 "$out"; fail "build menu bar icon"; }
+[[ -z $out ]] || { print -u2 "$out"; fail "warnings in menu bar icon build"; }
+pass "build menu bar icon, no warnings"
 
 [[ ${1:-} == --live ]] || exit 0
 

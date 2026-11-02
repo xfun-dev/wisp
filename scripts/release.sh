@@ -27,11 +27,16 @@ for arch in arm64 x86_64; do
   swiftc -O -parse-as-library -target $arch-apple-macos14 ui/mac/WispSettings.swift -o dist/Wisp-$arch
 done
 lipo -create -output $app/Contents/MacOS/Wisp dist/Wisp-arm64 dist/Wisp-x86_64
+for arch in arm64 x86_64; do
+  swiftc -O -parse-as-library -target $arch-apple-macos14 ui/mac/WispMenuBar.swift -o dist/WispMenu-$arch
+done
+lipo -create -output $app/Contents/Helpers/WispMenu dist/WispMenu-arm64 dist/WispMenu-x86_64
 mv dist/wisp $app/Contents/Helpers/wisp
 codesign --force -s "$SIGN_ID" -i "$LABEL" $app/Contents/Helpers/wisp
+codesign --force -s "$SIGN_ID" -i "$LABEL.menu" $app/Contents/Helpers/WispMenu
 codesign --force -s "$SIGN_ID" $app
 codesign --verify --deep --strict $app
-for f in $app/Contents/MacOS/Wisp $app/Contents/Helpers/wisp; do print "$f: $(lipo -archs $f)"; done
+for f in $app/Contents/MacOS/Wisp $app/Contents/Helpers/wisp $app/Contents/Helpers/WispMenu; do print "$f: $(lipo -archs $f)"; done
 
 ln -s /Applications dist/stage/Applications
 hdiutil create -quiet -volname "Wisp $version" -srcfolder dist/stage -fs HFS+ -format UDZO dist/Wisp-$version.dmg
@@ -39,5 +44,5 @@ hdiutil create -quiet -volname "Wisp $version" -srcfolder dist/stage -fs HFS+ -f
 cargo build --release --quiet --target x86_64-pc-windows-gnu
 cp target/x86_64-pc-windows-gnu/release/wisp.exe dist/Wisp-$version.exe
 
-rm -rf dist/stage dist/Wisp-arm64 dist/Wisp-x86_64
+rm -rf dist/stage dist/Wisp-arm64 dist/Wisp-x86_64 dist/WispMenu-arm64 dist/WispMenu-x86_64
 ls -la dist

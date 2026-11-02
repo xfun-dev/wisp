@@ -47,6 +47,44 @@ enum Installer {
     static let home = NSHomeDirectory()
     static var core: String { home + "/Library/Application Support/Wisp/wisp" }
     static var plist: String { home + "/Library/LaunchAgents/\(label).plist" }
+    /// the optional menu bar icon (RULES.md U12), with its own LaunchAgent while turned on
+    static let menuLabel = "fun.xfun.wisp.menu"
+    static var menuJob: String { "gui/\(getuid())/\(menuLabel)" }
+    static var menu: String { home + "/Library/Application Support/Wisp/WispMenu" }
+    static var menuPlist: String { home + "/Library/LaunchAgents/\(menuLabel).plist" }
+    static var menuEnabled: Bool { FileManager.default.fileExists(atPath: menuPlist) }
+
+    static var menuPlistText: String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key><string>\(menuLabel)</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(menu)</string>
+            </array>
+            <key>RunAtLoad</key><true/>
+            <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+            <key>LimitLoadToSessionType</key><string>Aqua</string>
+            <key>ProcessType</key><string>Interactive</string>
+        </dict>
+        </plist>
+
+        """
+    }
+
+    /// Turns the menu bar icon on (installed, started now and at every login) or off.
+    static func setMenu(_ on: Bool) {
+        if on {
+            try? menuPlistText.write(toFile: menuPlist, atomically: true, encoding: .utf8)
+            launchctl(["bootstrap", "gui/\(getuid())", menuPlist])
+        } else {
+            launchctl(["bootout", menuJob])
+            try? FileManager.default.removeItem(atPath: menuPlist)
+        }
+    }
 
     static var plistText: String {
         """
@@ -76,6 +114,7 @@ enum Installer {
         let fm = FileManager.default
         let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/wisp").path
         guard fm.fileExists(atPath: bundled) else { return nil }
+        updateMenu()
         let sameCore = fm.contentsEqual(atPath: bundled, andPath: core)
         let samePlist = (try? String(contentsOfFile: plist, encoding: .utf8)) == plistText
         if sameCore && samePlist { return nil }
@@ -103,6 +142,21 @@ enum Installer {
         return "启动后台失败（launchctl bootstrap）"
     }
 
+    /// Puts the bundled menu bar icon in place; restarts it if it is turned on and changed.
+    private static func updateMenu() {
+        let fm = FileManager.default
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/WispMenu").path
+        guard fm.fileExists(atPath: bundled), !fm.contentsEqual(atPath: bundled, andPath: menu) else { return }
+        let on = menuEnabled
+        if on { launchctl(["bootout", menuJob]) }
+        try? fm.createDirectory(atPath: (menu as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let fresh = menu + ".new"
+        try? fm.removeItem(atPath: fresh)
+        guard (try? fm.copyItem(atPath: bundled, toPath: fresh)) != nil else { return }
+        _ = try? fm.replaceItemAt(URL(fileURLWithPath: menu), withItemAt: URL(fileURLWithPath: fresh))
+        if on { setMenu(true) }
+    }
+
     /// Asks, then removes Wisp from this Mac (RULES.md I6).
     @MainActor
     static func confirmUninstall() {
@@ -123,9 +177,10 @@ enum Installer {
     /// core's path, and only an administrator can delete it (`tccutil` cannot).
     static func uninstall() {
         let fm = FileManager.default
+        launchctl(["bootout", menuJob])
         launchctl(["bootout", job])
         for _ in 0..<50 where launchctl(["print", job]) == 0 { usleep(100_000) }
-        for path in [plist, (core as NSString).deletingLastPathComponent, home + "/.config/wisp", home + "/Library/Logs/wisp.log"] {
+        for path in [menuPlist, plist, (core as NSString).deletingLastPathComponent, home + "/.config/wisp", home + "/Library/Logs/wisp.log"] {
             try? fm.removeItem(atPath: path)
         }
         let app = Bundle.main.bundleURL
@@ -1179,6 +1234,7 @@ struct SettingsView: View {
     @State private var scroll = 3.0
     @State private var dragging = false
     @State private var confirmUnpair = false
+    @State private var menuIcon = Installer.menuEnabled
 
     var body: some View {
         let s = core.status
@@ -1223,6 +1279,19 @@ struct SettingsView: View {
                 }
                 .padding(.top, 22)
                 Spacer(minLength: 0)
+                HStack(spacing: 14) {
+                    Text("菜单栏图标").font(.system(size: 12, weight: .semibold)).tracking(2).engraved()
+                        .frame(width: 70, alignment: .leading)
+                    ClaySwitch(on: menuIcon) {
+                        menuIcon.toggle()
+                        let on = menuIcon
+                        Task.detached { Installer.setMenu(on) }
+                    }
+                    .accessibilityLabel(Text("在菜单栏显示图标"))
+                    Text("约多占 10 MB 内存").font(.system(size: 11)).foregroundStyle(Color(hex: Clay.engrave, opacity: 0.75))
+                    Spacer()
+                }
+                .padding(.bottom, 12)
                 HStack(spacing: 14) {
                     Text("暂停切屏").font(.system(size: 12, weight: .semibold)).tracking(2).engraved()
                         .frame(width: 70, alignment: .leading)
