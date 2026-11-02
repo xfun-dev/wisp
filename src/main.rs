@@ -32,6 +32,8 @@ mod shell_win;
 #[cfg(windows)]
 mod gdiplus_win;
 #[cfg(windows)]
+mod install_win;
+#[cfg(windows)]
 mod status_win;
 #[cfg(windows)]
 mod win32;
@@ -44,6 +46,7 @@ const USAGE: &str = "\
   wisp client [--server <Mac的IP>] [--port 24801]             (Windows，不填 --server 时自动在局域网里找 Mac)
   wisp status                                                 (Windows；打开连接状态窗口)
   wisp pair <6 位配对码>                                       (Windows；和正在等待配对的 Mac 配对)
+  wisp install [--quiet] | uninstall [--quiet]                 (Windows；双击 Wisp.exe 等同 install)
 两台电脑的密钥由配对生成，保存在数据目录的 pair 文件里。";
 
 static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
@@ -72,8 +75,13 @@ fn fail(code: i32, msg: &str) -> ! {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(windows)]
-    if args.first().map(String::as_str) == Some("status") {
-        return status_win::run();
+    match args.first().map(String::as_str) {
+        Some("status") => return status_win::run(),
+        // double-clicked: Wisp.exe installs itself (RULES.md I1)
+        None => install_win::install(false),
+        Some("install") => install_win::install(args.iter().any(|a| a == "--quiet")),
+        Some("uninstall") => install_win::uninstall(args.iter().any(|a| a == "--quiet")),
+        _ => {}
     }
     #[cfg(target_os = "macos")]
     if args.first().map(String::as_str) == Some("pasteboard") {

@@ -83,7 +83,7 @@
 | C6 | 只接受合法长度的帧（最长 = 1 MB 剪贴板 + 头尾），超长帧读到长度前缀就拒绝；键鼠这类小消息收发都不分配堆内存 | `oversized_frames_are_rejected_before_reading` |
 | C7 | 密钥只来自配对（P3、P7），不出现在命令行或开机启动命令里 | — |
 | C8 | 找 Mac 的顺序：`--server` 手动指定 → 上次连上的地址 → 局域网广播查询，等 1 秒。广播发往 255.255.255.255 **以及本机每个私有局域网地址所在 /24 的网段广播**——代理/VPN 的 TUN 网卡（如 Clash 的 198.18.x）常常占着默认路由并吞掉 255.255.255.255，网段广播走局域网路由不受影响；169.254 和公网地址跳过 | `broadcasts_reach_every_private_lan_but_skip_tunnels_and_link_local` |
-| C9 | 发现查询和回答都带由密码派生的认证标签（截断 SHA-256），回答还要对上查询里的随机数；不知道密码的设备收不到回答，也伪造不了回答 | `discovery_answers_only_the_password_holder`、`discovery_rejects_forged_or_replayed_answers`、`a_server_with_another_password_stays_silent` |
+| C9 | 发现查询和回答都带由密码派生的认证标签（截断 SHA-256），回答还要对上查询里的随机数；不知道密码的设备收不到回答，也伪造不了回答。等待回答期间每 300 ms 重发一次查询：Wi‑Fi 上的广播会丢（Mac 无线网卡休眠时尤其），只发一次曾让配对偶尔失败 | `discovery_answers_only_the_password_holder`、`discovery_rejects_forged_or_replayed_answers`、`a_server_with_another_password_stays_silent`、`a_lost_query_is_sent_again` |
 | C10 | 客户端只发出站流量（广播查询 + 等待单播回复），Windows 防火墙不需要入站规则 | `finds_the_server_and_its_tcp_port` |
 | C11 | 同一个连接失败原因只记一次日志，直到成功连上为止（Mac 不在时不刷日志） | — |
 
@@ -124,6 +124,17 @@
 | B2 | 颜色：墨 `#0C1018`、青光 `#2FD5BE`（已连接）、琥珀 `#F2A33A`（寻找中/需要注意）、雾 `#F6F7F9`；状态色靠亮度也能区分，不只靠色相 | — |
 | B4 | Mac 设置窗口是「桌面模型」：上半是墙与木桌上的黏土 Mac 和另一台屏幕，屏幕由夹在桌沿、底座不动的两节机械臂托着，换布局时关节弯折、屏幕弹过去；已连接时两机之间是流动的青色光点。下半是木抽屉面板：刻进木板的托盘选位置（迷你 Mac 与“上方”在同一竖线）、凹槽滑轨配黏土珠子调速度、刻字链接。固定暖木配色，不随系统深色模式变；数字与拉丁字母用 Fredoka（SIL OFL，打包在应用里，许可在 `ui/mac/fonts/`），中文用系统字体。动画全部交给 Core Animation，窗口开着几乎不占 CPU | 截图核对三种布局 |
 | B5 | Windows 状态窗口是同一张桌子：这台电脑的屏幕挂在机械臂上、Mac 在下；下半木抽屉里**始终是同一块凹槽托盘**（位置大小不变，切换状态只换里面的字）：已连接时显示连接时长与 Mac 地址，配对时是 6 个配对码凹槽（数字落成黏土键帽），没在运行时写明原因；底部一行左边是这个状态的操作（凸起的黏土拉手或刻字链接），右边“退出 Wisp”。**能点的才凸起，只看的都内嵌**。GDI+ 画进缓存位图，只重画会动的部分（20 fps，最小化时停）；标题栏用 DWM 染成墙色 | 截图核对；`a_click_survives_the_capture_change_sent_while_releasing` |
+
+## 5e. 安装与发布
+
+| # | 规则 | 保证 |
+|---|---|---|
+| I1 | Windows 只发一个 `Wisp-<版本>.exe`，它自己就是安装程序：双击（或 `wisp install`）把自己复制到 `%LOCALAPPDATA%\Wisp\wisp.exe`，写登录自启（Run 键）、开始菜单“Wisp”（打开状态窗口）、“设置 → 应用”里的卸载项，启动后台并打开状态窗口；已在运行的旧版本先退出再替换。`--quiet` 不弹窗口（`scripts/deploy.sh` 用） | 实机安装 |
+| I2 | `wisp uninstall`（“设置 → 应用”里的卸载）退出后台、删除自启、开始菜单项、卸载项和整个 Wisp 文件夹 | 实机卸载 |
+| I3 | 安装器启动的进程不继承安装器的输入输出，等待安装器的脚本不会被常驻后台拖住；创建快捷方式用 IShellLink，ole32.dll 按需加载（R6） | — |
+| I4 | Mac 只发一个 DMG，里面的 `Wisp.app` 自带后台（`Contents/Helpers/wisp`），两者都是 Apple 芯片 + Intel 的通用二进制。每次打开 Wisp，它比较自带的后台和已安装的（`~/Library/Application Support/Wisp/wisp`）以及 LaunchAgent：不同就停掉旧的、换上新的、重新注册；相同就什么都不做。`Wisp --install` 只做这一步然后退出（`scripts/deploy.sh` 用）。签名身份不变（D4），所以更新后“辅助功能”权限仍然有效 | 实测：首次安装、覆盖更新、无变化时不重启 |
+| I6 | Mac 卸载：设置窗口菜单“Wisp → 卸载 Wisp…”确认后，停止后台，删除 LaunchAgent、后台程序、`~/.config/wisp`（配对与设置）和日志，把 Wisp.app 移到废纸篓；`Wisp --uninstall` 不询问直接执行。系统设置“辅助功能”里的 wisp 条目会留下（macOS 按路径记录，普通权限删不掉），重新安装后授权沿用 | 实测：卸载后无进程、无残留文件 |
+| I5 | `scripts/release.sh` 跑完验证后在 `dist/` 生成 `Wisp-<版本>.dmg` 和 `Wisp-<版本>.exe` | — |
 
 ## 6. 资源预算（产品卖点，视同功能）
 

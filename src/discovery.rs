@@ -126,22 +126,35 @@ pub fn serve(socket: UdpSocket, respond: impl Fn(&[u8]) -> Option<Vec<u8>>) {
 
 /// Sends `query` to each of `targets` and returns the first answer `accept` takes
 /// within `wait`, with the address it came from.
+/// How often a query is sent again while waiting: a broadcast over Wi-Fi can simply be
+/// lost (a Mac's radio dozing drops them), and one lost packet must not fail a pairing.
+#[cfg(any(test, windows))]
+const RESEND: Duration = Duration::from_millis(300);
+
 #[cfg(any(test, windows))]
 fn ask<T>(query: &[u8], targets: &[SocketAddr], wait: Duration, missing: &str, accept: impl Fn(&[u8]) -> Option<T>) -> io::Result<(std::net::IpAddr, T)> {
     let socket = UdpSocket::bind(("0.0.0.0", 0))?;
     socket.set_broadcast(true)?;
-    for to in targets {
-        // one unreachable target (e.g. no route for a broadcast) must not stop the others
-        let _ = socket.send_to(query, to);
-    }
+    let send = || {
+        for to in targets {
+            // one unreachable target (e.g. no route for a broadcast) must not stop the others
+            let _ = socket.send_to(query, to);
+        }
+    };
     let deadline = Instant::now() + wait;
+    let mut next = Instant::now();
     let mut buf = [0u8; 512];
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
+        let now = Instant::now();
+        if now >= next {
+            send();
+            next = now + RESEND;
+        }
+        let left = deadline.saturating_duration_since(now);
         if left.is_zero() {
             return Err(io::Error::new(io::ErrorKind::TimedOut, missing.to_string()));
         }
-        socket.set_read_timeout(Some(left))?;
+        socket.set_read_timeout(Some(left.min(next.saturating_duration_since(now)).max(Duration::from_millis(1))))?;
         match socket.recv_from(&mut buf) {
             Ok((n, from)) => {
                 if let Some(found) = accept(&buf[..n]) {
@@ -230,6 +243,21 @@ mod tests {
         assert!(find_pairing(&[addr], Duration::from_millis(300)).is_err(), "no code open: silent");
         let addr = mac(None, Some("Mac"));
         assert!(find(&proto::psk("k"), &[addr], Duration::from_millis(300)).is_err(), "unpaired: no answer to a keyed query");
+    }
+
+    #[test]
+    fn a_lost_query_is_sent_again() {
+        // a Mac whose radio drops the first broadcast (seen on 2026-11-02: one pairing
+        // attempt found nothing, the same command a moment later found the Mac)
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = socket.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            let _ = socket.recv_from(&mut buf);
+            serve(socket, |q| respond(q, None, Some("Mac"), 24801))
+        });
+        let (_, name) = find_pairing(&[addr], Duration::from_secs(2)).unwrap();
+        assert_eq!(name, "Mac");
     }
 
     #[test]

@@ -7,7 +7,20 @@ import SwiftUI
 struct WispSettings: App {
     @NSApplicationDelegateAdaptor(QuitWhenClosed.self) var delegate
 
-    init() { Fonts.register() }
+    init() {
+        // `Wisp --install`: install or update the background core and quit (scripts/deploy.sh)
+        if CommandLine.arguments.contains("--install") {
+            let problem = Installer.installIfNeeded()
+            if let problem { FileHandle.standardError.write(Data((problem + "\n").utf8)) }
+            exit(problem == nil ? 0 : 1)
+        }
+        // `Wisp --uninstall`: remove everything without asking (for scripts; the menu asks first)
+        if CommandLine.arguments.contains("--uninstall") {
+            Installer.uninstall()
+            exit(0)
+        }
+        Fonts.register()
+    }
 
     var body: some Scene {
         Window("Wisp", id: "settings") {
@@ -16,6 +29,123 @@ struct WispSettings: App {
         .windowResizability(.contentSize)
         // no title bar strip or separator: the traffic lights share a row with the brand mark
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("卸载 Wisp…") { Installer.confirmUninstall() }
+            }
+        }
+    }
+}
+
+/// The app carries the background core at Contents/Helpers/wisp and puts it in place
+/// itself (RULES.md I4): copied to ~/Library/Application Support/Wisp, started by a
+/// LaunchAgent at login. Dragging a newer app over the old one and opening it updates
+/// the core; nothing happens when the installed core is already this one.
+enum Installer {
+    static let label = "fun.xfun.wisp"
+    static var job: String { "gui/\(getuid())/\(label)" }
+    static let home = NSHomeDirectory()
+    static var core: String { home + "/Library/Application Support/Wisp/wisp" }
+    static var plist: String { home + "/Library/LaunchAgents/\(label).plist" }
+
+    static var plistText: String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key><string>\(label)</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(core)</string>
+                <string>server</string>
+            </array>
+            <key>RunAtLoad</key><true/>
+            <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+            <key>LimitLoadToSessionType</key><string>Aqua</string>
+            <key>ProcessType</key><string>Interactive</string>
+            <key>StandardErrorPath</key><string>\(home)/Library/Logs/wisp.log</string>
+        </dict>
+        </plist>
+
+        """
+    }
+
+    /// Returns what went wrong, or nil when the core is in place (or the app has none to install).
+    static func installIfNeeded() -> String? {
+        let fm = FileManager.default
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/wisp").path
+        guard fm.fileExists(atPath: bundled) else { return nil }
+        let sameCore = fm.contentsEqual(atPath: bundled, andPath: core)
+        let samePlist = (try? String(contentsOfFile: plist, encoding: .utf8)) == plistText
+        if sameCore && samePlist { return nil }
+        // stop the old core; bootout returns before it is gone
+        _ = launchctl(["bootout", job])
+        for _ in 0..<50 where launchctl(["print", job]) == 0 { usleep(100_000) }
+        do {
+            try fm.createDirectory(atPath: (core as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try fm.createDirectory(atPath: (plist as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            if !sameCore {
+                let fresh = core + ".new"
+                try? fm.removeItem(atPath: fresh)
+                try fm.copyItem(atPath: bundled, toPath: fresh)
+                _ = try fm.replaceItemAt(URL(fileURLWithPath: core), withItemAt: URL(fileURLWithPath: fresh))
+            }
+            try plistText.write(toFile: plist, atomically: true, encoding: .utf8)
+        } catch {
+            return "安装后台失败：\(error.localizedDescription)"
+        }
+        _ = launchctl(["enable", job])
+        for attempt in 1...3 {
+            if launchctl(["bootstrap", "gui/\(getuid())", plist]) == 0 { return nil }
+            if attempt < 3 { sleep(1) }
+        }
+        return "启动后台失败（launchctl bootstrap）"
+    }
+
+    /// Asks, then removes Wisp from this Mac (RULES.md I6).
+    @MainActor
+    static func confirmUninstall() {
+        let alert = NSAlert()
+        alert.messageText = "卸载 Wisp？"
+        alert.informativeText = "会停止 Wisp，删除它的后台程序、开机启动项、配对和设置，并把 Wisp 移到废纸篓。以后再用需要重新安装和配对。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "卸载")
+        alert.addButton(withTitle: "取消")
+        alert.buttons.first?.hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        uninstall()
+        NSApp.terminate(nil)
+    }
+
+    /// Stops the core and removes it, its LaunchAgent, its data and log, and finally
+    /// this app (to the Trash). The Accessibility entry stays: macOS keys it by the
+    /// core's path, and only an administrator can delete it (`tccutil` cannot).
+    static func uninstall() {
+        let fm = FileManager.default
+        launchctl(["bootout", job])
+        for _ in 0..<50 where launchctl(["print", job]) == 0 { usleep(100_000) }
+        for path in [plist, (core as NSString).deletingLastPathComponent, home + "/.config/wisp", home + "/Library/Logs/wisp.log"] {
+            try? fm.removeItem(atPath: path)
+        }
+        let app = Bundle.main.bundleURL
+        if app.pathExtension == "app" {
+            NSWorkspace.shared.recycle([app]) { _, _ in }
+            // the completion comes on the main queue; give it a moment before exiting
+            RunLoop.main.run(until: Date().addingTimeInterval(1))
+        }
+    }
+
+    @discardableResult
+    private static func launchctl(_ args: [String]) -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return -1 }
+        p.waitUntilExit()
+        return p.terminationStatus
     }
 }
 
@@ -70,6 +200,9 @@ final class Core: ObservableObject {
 
     init() {
         Task {
+            if let problem = await Task.detached(operation: { Installer.installIfNeeded() }).value {
+                self.problem = problem
+            }
             await startIfNeeded()
             refresh()
         }

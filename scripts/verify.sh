@@ -30,7 +30,9 @@ done
 
 # the settings window: build the bundle deploy.sh installs
 app=target/Wisp.app
-rm -rf $app && mkdir -p $app/Contents/MacOS $app/Contents/Resources && cp ui/mac/Info.plist $app/Contents/
+rm -rf $app && mkdir -p $app/Contents/MacOS $app/Contents/Resources $app/Contents/Helpers && cp ui/mac/Info.plist $app/Contents/
+# the app carries the core and installs it on launch (RULES.md I4)
+cp target/release/wisp $app/Contents/Helpers/wisp
 cp ui/mac/AppIcon.icns ui/mac/fonts/* $app/Contents/Resources/
 out=$(swiftc -O -parse-as-library -target arm64-apple-macos14 ui/mac/WispSettings.swift -o $app/Contents/MacOS/Wisp 2>&1) || { print -u2 "$out"; fail "build settings window"; }
 [[ -z $out ]] || { print -u2 "$out"; fail "warnings in settings window build"; }
@@ -52,11 +54,14 @@ if (( ${#BRIDGE} == 0 )); then
   print "verify: skip: Windows checks (no WISP_WIN_BRIDGE in scripts/local.env)"
   exit 0
 fi
-win=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "$p = Get-Process wisp -ErrorAction SilentlyContinue; if ($p) { [int]($p.PrivateMemorySize64/1KB) } else { 0 }"' --timeout 30 2>&1 | tr -dc '0-9')
-[[ -n $win && $win != 0 ]] || fail "Windows client not running"
+# the background client by its command line: a status window is a wisp process too.
+# A failing remote command must say so, not end this script silently (set -e, pipefail).
+raw=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "$c = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \"wisp.exe\" -and $_.CommandLine -match \" client\" } | Select-Object -First 1; if ($c) { [int]((Get-Process -Id $c.ProcessId).PrivateMemorySize64/1KB) } else { 0 }"' --timeout 30 2>&1) || true
+win=$(print -r -- "$raw" | grep -Eo '^[0-9]+' | head -1 || true)
+[[ $win == <1-> ]] || fail "Windows client not running: $raw"
 (( win <= WIN_BUDGET_KB )) || fail "Windows private memory ${win} KB > ${WIN_BUDGET_KB} KB"
 pass "Windows private memory ${win} KB (budget ${WIN_BUDGET_KB})"
 
-win_status=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "Get-Content -Encoding UTF8 $env:LOCALAPPDATA\Wisp\status -ErrorAction SilentlyContinue"' --timeout 30 2>&1)
+win_status=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "Get-Content -Encoding UTF8 $env:LOCALAPPDATA\Wisp\status -ErrorAction SilentlyContinue"' --timeout 30 2>&1) || true
 [[ $win_status == *state=connected* ]] || fail "Windows status file does not say connected: $win_status"
 pass "Windows status file says connected"
