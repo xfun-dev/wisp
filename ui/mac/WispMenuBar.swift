@@ -168,9 +168,13 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Quits the core (it stays stopped until the next login or until Wisp is opened, U11) and this icon.
+    /// Quits all of Wisp (U11): the core (stopped until the next login or until Wisp is
+    /// opened), an open settings window, and this icon.
     @objc private func quitAll() {
         _ = Control.ask("quit")
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: "fun.xfun.wisp.settings") {
+            app.terminate()
+        }
         NSApp.terminate(nil)
     }
 

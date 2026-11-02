@@ -142,6 +142,14 @@ enum Installer {
         return "启动后台失败（launchctl bootstrap）"
     }
 
+    /// Asks a running menu bar icon to quit. A normal quit (exit 0) is not restarted by
+    /// launchd (KeepAlive only on failure), and it comes back at the next login.
+    static func quitMenu() {
+        for app in NSWorkspace.shared.runningApplications where app.executableURL?.lastPathComponent == "WispMenu" {
+            app.terminate()
+        }
+    }
+
     /// Puts the bundled menu bar icon in place; restarts it if it is turned on and changed.
     private static func updateMenu() {
         let fm = FileManager.default
@@ -274,7 +282,8 @@ final class Core: ObservableObject {
                 problem = nil
             } else {
                 status = nil
-                problem = reply.isEmpty ? "Wisp 没有在运行" : reply
+                // no core to answer: plain words, not the socket error
+                problem = reply.isEmpty || reply.contains("连不上") ? "Wisp 没有在运行" : reply
             }
         }
     }
@@ -289,6 +298,8 @@ final class Core: ObservableObject {
 
     /// Opening Wisp means "make Wisp run": after quitting, this brings the core back (RULES.md U11).
     private func startIfNeeded() async {
+        // the menu bar icon, if turned on, comes back with Wisp (kickstart leaves a running one alone)
+        if Installer.menuEnabled { _ = await run("/bin/launchctl", ["kickstart", Installer.menuJob]) }
         guard Status(reply: await ctl(["status"])) == nil else { return }
         let plist = NSHomeDirectory() + "/Library/LaunchAgents/fun.xfun.wisp.plist"
         // still loaded after a clean quit: kickstart; unloaded entirely: bootstrap
@@ -300,9 +311,11 @@ final class Core: ObservableObject {
         }
     }
 
+    /// Quitting Wisp quits all of it (RULES.md U11): the core, the menu bar icon, this window.
     func quit() {
         Task {
             _ = await ctl(["quit"])
+            Installer.quitMenu()
             NSApp.terminate(nil)
         }
     }
@@ -967,6 +980,7 @@ struct WallSign: View {
     }
 
     private var detail: String {
+        if problem == "Wisp 没有在运行" { return "重新打开 Wisp 即可启动" }
         if let problem { return problem }
         guard let s, let mood else { return "" }
         return switch mood {
@@ -1175,12 +1189,14 @@ struct GrooveSlider: View {
 /// A clay knob in a carved channel.
 struct ClaySwitch: View {
     let on: Bool
+    /// red for a switch that holds something back (pause), teal for one that adds something
+    var onColor: UInt32 = Clay.red
     let flip: () -> Void
 
     var body: some View {
         Button(action: flip) {
             ZStack(alignment: on ? .trailing : .leading) {
-                Capsule().fill(Color(hex: on ? Clay.red : Clay.clayDrop).shadow(.inner(color: Color(hex: 0x321C08, opacity: 0.5), radius: 3, y: 3)))
+                Capsule().fill(Color(hex: on ? onColor : Clay.clayDrop).shadow(.inner(color: Color(hex: 0x321C08, opacity: 0.5), radius: 3, y: 3)))
                 Circle()
                     .fill(Color(hex: Clay.clay).shadow(.inner(color: Color(hex: Clay.clayShade), radius: 0, y: -3)))
                     .shadow(color: Color(hex: Clay.clayDrop), radius: 0, y: 3)
@@ -1282,7 +1298,7 @@ struct SettingsView: View {
                 HStack(spacing: 14) {
                     Text("菜单栏图标").font(.system(size: 12, weight: .semibold)).tracking(2).engraved()
                         .frame(width: 70, alignment: .leading)
-                    ClaySwitch(on: menuIcon) {
+                    ClaySwitch(on: menuIcon, onColor: Clay.teal) {
                         menuIcon.toggle()
                         let on = menuIcon
                         Task.detached { Installer.setMenu(on) }
