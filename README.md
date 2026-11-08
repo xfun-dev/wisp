@@ -13,7 +13,7 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 ## Features
 
 - **Edge switching**: move the cursor past the edge of the Mac's screen to control Windows; the other screen can be above, left or right of the Mac
-- **Keyboard mapping**: keys map by physical position, ⌘ becomes Ctrl, pinch-to-zoom becomes Ctrl + scroll; held keys are released when you switch
+- **Keyboard mapping**: keys map by physical position, ⌘ becomes Ctrl, pinch-to-zoom becomes Ctrl + scroll; the top row's volume, playback, Mission Control and Spotlight keys work on Windows too; held keys are released when you switch
 - **Clipboard sync**: plain text both ways, up to 1 MB, skipping anything a password manager marks as sensitive
 - **Pairing and encryption**: automatic discovery on the local network, pairing with a 6-digit code (SPAKE2), traffic encrypted with ChaCha20-Poly1305
 - **Lightweight**: about 3 MB of memory on the Mac and 2 MB on Windows; written in Rust, no runtime

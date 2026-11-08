@@ -7,7 +7,7 @@
 
 use crate::control::{self, Live};
 use crate::discovery;
-use crate::keymap::{self, Change};
+use crate::keymap::{self, Change, SystemKey};
 use crate::logic::capture::{self, Hop, Pinch, Rect, Switcher};
 use crate::pasteboard_mac::{self as pasteboard, Job};
 use crate::proto::{self, Msg};
@@ -144,6 +144,12 @@ const BUTTON_NUMBER: u32 = 3;
 const DELTA_X: u32 = 4;
 const DELTA_Y: u32 = 5;
 const KEYCODE: u32 = 9;
+const AUTOREPEAT: u32 = 8;
+// NX_SYSDEFINED (the top row's media keys): its subtype and data1, readable as plain
+// integer fields, so the core needs no AppKit (measured: fields 99 and 149)
+const SYS_DEFINED: u32 = 14;
+const SYS_SUBTYPE: u32 = 99;
+const SYS_DATA1: u32 = 149;
 const SCROLL_LINES_Y: u32 = 11;
 const SCROLL_LINES_X: u32 = 12;
 const SCROLL_CONTINUOUS: u32 = 88;
@@ -333,7 +339,7 @@ pub fn run(opts: Options) -> io::Result<()> {
 
     let grab_mask = [
         LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, MOUSE_MOVED, LEFT_DRAGGED, RIGHT_DRAGGED, KEY_DOWN, KEY_UP,
-        FLAGS_CHANGED, SCROLL, OTHER_DOWN, OTHER_UP, OTHER_DRAGGED, GESTURE, MAGNIFY,
+        FLAGS_CHANGED, SCROLL, OTHER_DOWN, OTHER_UP, OTHER_DRAGGED, GESTURE, MAGNIFY, SYS_DEFINED,
     ]
     .iter()
     .fold(0u64, |m, t| m | 1 << t);
@@ -491,8 +497,22 @@ extern "C" fn on_grab(_proxy: *mut c_void, ty: u32, ev: CGEventRef, refcon: *mut
     if tap.active.is_none() || !REMOTE.load(Ordering::SeqCst) {
         return ev;
     }
+    // brightness, the keyboard backlight, Do Not Disturb: the Mac's even now (RULES.md K7)
+    if stays_on_mac(ty, ev) {
+        return ev;
+    }
     tap.handle(ty, ev);
     ptr::null_mut()
+}
+
+/// Whether a key event is one the Mac keeps while Windows has control.
+fn stays_on_mac(ty: u32, ev: CGEventRef) -> bool {
+    match ty {
+        // not a media key (another subtype): left alone, as before the tap saw these
+        SYS_DEFINED => keymap::aux_button(field(ev, SYS_SUBTYPE), field(ev, SYS_DATA1)).is_none_or(|(key, _)| keymap::aux_key(key) == SystemKey::Mac),
+        KEY_DOWN | KEY_UP => keymap::special_key(field(ev, KEYCODE) as u16) == Some(SystemKey::Mac),
+        _ => false,
+    }
 }
 
 /// Moves within this long after the hop are still the Mac's own (RULES.md S2).
@@ -654,6 +674,17 @@ impl Tap {
         self.active.as_ref().unwrap().tx.try_send(msg).map_err(|_| ())
     }
 
+    /// Taps a key combination: pressed in order, released in reverse (RULES.md K7).
+    fn chord(&self, keys: &[u16]) -> Result<(), ()> {
+        for &scan in keys {
+            self.send(Msg::Key { scan, down: true })?;
+        }
+        for &scan in keys.iter().rev() {
+            self.send(Msg::Key { scan, down: false })?;
+        }
+        Ok(())
+    }
+
     fn forward(&mut self, ty: u32, ev: CGEventRef) -> Result<(), ()> {
         match ty {
             MOUSE_MOVED | LEFT_DRAGGED | RIGHT_DRAGGED | OTHER_DRAGGED => {
@@ -703,9 +734,30 @@ impl Tap {
                 }
             }
             KEY_DOWN | KEY_UP => {
-                let Some(scan) = keymap::mac_to_scan(field(ev, KEYCODE) as u16) else { return Ok(()) };
-                self.send(Msg::Key { scan, down: ty == KEY_DOWN })
+                let kc = field(ev, KEYCODE) as u16;
+                if let Some(scan) = keymap::mac_to_scan(kc) {
+                    return self.send(Msg::Key { scan, down: ty == KEY_DOWN });
+                }
+                match keymap::special_key(kc) {
+                    // once per press, not per autorepeat
+                    Some(SystemKey::Chord(keys)) if ty == KEY_DOWN && field(ev, AUTOREPEAT) == 0 => self.chord(keys),
+                    Some(_) => Ok(()),
+                    None => {
+                        if ty == KEY_DOWN && field(ev, AUTOREPEAT) == 0 {
+                            log!("wisp: 没有对应的按键，未转发（keycode {kc:#x}）");
+                        }
+                        Ok(())
+                    }
+                }
             }
+            SYS_DEFINED => match keymap::aux_button(field(ev, SYS_SUBTYPE), field(ev, SYS_DATA1)) {
+                Some((key, down)) => match keymap::aux_key(key) {
+                    SystemKey::Key(scan) => self.send(Msg::Key { scan, down }),
+                    SystemKey::Chord(keys) if down => self.chord(keys),
+                    _ => Ok(()),
+                },
+                None => Ok(()),
+            },
             FLAGS_CHANGED => {
                 let flags = unsafe { CGEventGetFlags(ev) };
                 let Some((scan, change)) = keymap::flags_changed(field(ev, KEYCODE) as u16, flags) else { return Ok(()) };

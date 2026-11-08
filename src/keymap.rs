@@ -153,9 +153,99 @@ fn modifier_flag(kc: u16) -> Option<u64> {
     })
 }
 
+/// What a key from the Mac's top row does while Windows has control (RULES.md K6, K7).
+#[derive(Debug, PartialEq)]
+pub enum SystemKey {
+    /// press and release this scancode with the key
+    Key(u16),
+    /// on press, tap this combination (in order, then released in reverse); scancodes
+    /// as the Mac would send them, so Control's position (0x1D) is the Windows key
+    /// once the receiver swaps Ctrl and Win (K3)
+    Chord(&'static [u16]),
+    /// stays on the Mac: brightness, keyboard backlight, Do Not Disturb
+    Mac,
+}
+
+/// The Mac's media keys arrive as NX_SYSDEFINED events of subtype 8 (aux control
+/// buttons); `data1` is `key << 16 | state << 8 | repeat`, state 0xA down, 0xB up.
+/// Returns the key and whether it went down.
+pub fn aux_button(subtype: i64, data1: i64) -> Option<(u32, bool)> {
+    const AUX_CONTROL_BUTTONS: i64 = 8;
+    if subtype != AUX_CONTROL_BUTTONS {
+        return None;
+    }
+    let key = ((data1 >> 16) & 0xFFFF) as u32;
+    match (data1 >> 8) & 0xFF {
+        0xA => Some((key, true)),
+        0xB => Some((key, false)),
+        _ => None,
+    }
+}
+
+/// An aux button (NX_KEYTYPE_*): sound, mute, play, next, previous go to Windows as
+/// its media keys; brightness and the keyboard backlight stay on the Mac.
+pub fn aux_key(key: u32) -> SystemKey {
+    match key {
+        0 => SystemKey::Key(0xE030),       // volume up
+        1 => SystemKey::Key(0xE02E),       // volume down
+        7 => SystemKey::Key(0xE020),       // mute
+        16 => SystemKey::Key(0xE022),      // play / pause
+        17 | 19 => SystemKey::Key(0xE019), // next, fast forward
+        18 | 20 => SystemKey::Key(0xE010), // previous, rewind
+        _ => SystemKey::Mac,
+    }
+}
+
+const CONTROL_POS: u16 = 0x1D;
+
+/// Top-row keys that arrive as ordinary key events with keycodes beyond the
+/// keyboard: Mission Control, Spotlight / Launchpad and Dictation become their
+/// Windows counterparts; Do Not Disturb stays on the Mac. None: not one of them.
+pub fn special_key(kc: u16) -> Option<SystemKey> {
+    Some(match kc {
+        0xA0 => SystemKey::Chord(&[CONTROL_POS, 0x0F]),        // Mission Control: Win+Tab
+        0xB1 | 0x83 => SystemKey::Chord(&[CONTROL_POS, 0x1F]), // Spotlight, Launchpad: Win+S
+        0xB0 => SystemKey::Chord(&[CONTROL_POS, 0x23]),        // Dictation: Win+H
+        0xB2 => SystemKey::Mac,                                // Do Not Disturb
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_keys_go_to_windows_and_brightness_stays() {
+        // data1 as macOS builds it: key << 16 | state << 8
+        assert_eq!(aux_button(8, 0x00_0A00), Some((0, true)), "volume up pressed");
+        assert_eq!(aux_button(8, 0x10_0B00), Some((16, false)), "play released");
+        assert_eq!(aux_button(8, 0x01_0A01), Some((1, true)), "a repeat is still a press");
+        assert_eq!(aux_button(7, 0x00_0A00), None, "another subtype: not a key");
+        assert_eq!(aux_key(0), SystemKey::Key(0xE030));
+        assert_eq!(aux_key(1), SystemKey::Key(0xE02E));
+        assert_eq!(aux_key(7), SystemKey::Key(0xE020));
+        assert_eq!(aux_key(16), SystemKey::Key(0xE022));
+        assert_eq!(aux_key(17), SystemKey::Key(0xE019));
+        assert_eq!(aux_key(18), SystemKey::Key(0xE010));
+        for mac in [2, 3, 21, 22, 23] {
+            assert_eq!(aux_key(mac), SystemKey::Mac, "brightness / backlight {mac}");
+        }
+    }
+
+    #[test]
+    fn top_row_shortcuts_become_windows_ones() {
+        // the receiver turns Control's position into the Windows key (K3)
+        assert_eq!(crate::logic::replay::mac_habit(CONTROL_POS), crate::logic::replay::LEFT_WIN);
+        assert_eq!(special_key(0xA0), Some(SystemKey::Chord(&[0x1D, 0x0F])), "Mission Control: Win+Tab");
+        assert_eq!(special_key(0xB1), Some(SystemKey::Chord(&[0x1D, 0x1F])), "Spotlight: Win+S");
+        assert_eq!(special_key(0xB0), Some(SystemKey::Chord(&[0x1D, 0x23])), "Dictation: Win+H");
+        assert_eq!(special_key(0xB2), Some(SystemKey::Mac), "Do Not Disturb stays");
+        assert_eq!(special_key(0x00), None, "an ordinary key");
+        for kc in [0xA0u16, 0xB0, 0xB1, 0xB2, 0x83] {
+            assert_eq!(mac_to_scan(kc), None, "{kc:#x} is not also an ordinary key");
+        }
+    }
 
     #[test]
     fn no_two_keys_share_a_scancode() {

@@ -26,7 +26,8 @@
 | K3 | 「Mac 习惯」由**接收端**决定：Windows 端把 Ctrl 和 Win 对调，所以 ⌘C 就是 Ctrl+C，⌃ 就是 Win 键 | `command_becomes_ctrl_and_back` |
 | K4 | 修饰键分左右，按下和松开各发一次；Caps Lock 每次事件按「按下 + 松开」发送 | `flags_tell_press_from_release_per_side` |
 | K5 | 映射表里不能有两个键对应同一个扫描码 | `no_two_keys_share_a_scancode` |
-| K6 | fn 键不转发；Mac 顶排的媒体键暂不转发（待办） | `flags_tell_press_from_release_per_side` |
+| K6 | fn 键不转发。按住 fn 时顶排就是 F1–F12，照常转发 | `flags_tell_press_from_release_per_side` |
+| K7 | 顶排功能键（不按 fn）：F7–F12 的上一首、播放/暂停、下一首、静音、音量减/加（以及快进、快退）作为 Windows 的媒体键扫描码转发，Mac 自己的不动；调度中心 → Win+Tab，聚焦搜索/启动台 → Win+S，听写 → Win+H，按下时发一次组合键；**屏幕亮度、键盘背光、勿扰留给 Mac**，即使在控制 Windows 时也由 Mac 处理。媒体键是 NX_SYSDEFINED 事件，按键数据从整数字段读出（子类型 99、data1 149，实测），核心不加载 AppKit。其他认不出的键不转发并记日志 | `media_keys_go_to_windows_and_brightness_stays`、`top_row_shortcuts_become_windows_ones` |
 
 ## 3. 鼠标、滚动、手势
 
@@ -189,7 +190,7 @@
 | 切屏（上下） | ✅ | ✅ | |
 | 鼠标、按键、滚动 | ✅ | ✅ | |
 | 双指缩放 | ✅ | ✅ Ctrl+滚轮 | |
-| 媒体键（音量、亮度） | ❌ | ❌ | 待办 |
+| 媒体键（音量、播放）、调度中心/搜索/听写 | ✅ | ✅ | 亮度、背光、勿扰留给 Mac（K7） |
 | 剪贴板（纯文本，双向） | ✅ | ✅ | 切屏时同步，≤1 MB，不同步敏感内容 |
 | 自动发现 | ✅ 回答查询 | ✅ 广播查询 | 也可用 `--server` 手动指定 |
 | 配对 | ✅ 设置窗口 | ✅ 状态窗口 | 也可用命令 `wisp ctl pair` / `wisp.exe pair <码>` |
