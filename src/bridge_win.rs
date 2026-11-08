@@ -15,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_OUTPUT: usize = bridge::MAX_OUTPUT;
+/// `wisp win put <exe> wisp:update`: the service's next client (RULES.md W5)
+const UPDATE_PATH: &str = "wisp:update";
 
 /// Files being sent to the Mac, each waiting for the Mac's Ack of its last piece.
 static SENDING: Mutex<Option<HashMap<u32, mpsc::Sender<()>>>> = Mutex::new(None);
@@ -66,14 +68,40 @@ pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
                 answer(&queue, Bridge::Done { id, code, data: out });
             });
         }
+        // a new client for WispService, from the paired Mac with the bridge open: written
+        // by SYSTEM into the protected folder, whole before the service sees it (W5)
+        Bridge::Put { id, offset, last, path, data } if path == UPDATE_PATH => {
+            let written = (|| -> std::io::Result<()> {
+                if !crate::client_win::is_system() {
+                    return Err(std::io::Error::other("Windows 没有开启「锁屏和权限弹窗也能控制」"));
+                }
+                let dir = crate::service_win::state_dir();
+                let tmp = dir.join("update.tmp");
+                let mut f = if offset == 0 { std::fs::File::create(&tmp)? } else { std::fs::OpenOptions::new().append(true).open(&tmp)? };
+                f.write_all(&data)?;
+                drop(f);
+                if last {
+                    std::fs::rename(&tmp, dir.join(crate::service_win::NEXT_EXE))?;
+                }
+                Ok(())
+            })();
+            match written {
+                Err(e) => answer(queue, Bridge::Done { id, code: -1, data: format!("更新失败：{e}").into_bytes() }),
+                Ok(()) if last => answer(queue, Bridge::Done { id, code: 0, data: vec![] }),
+                Ok(()) => answer(queue, Bridge::Ack { id }),
+            }
+        }
         // pieces arrive in order on this thread; writing them here keeps that order
         Bridge::Put { id, offset, last, path, data } => {
             let written = (|| -> std::io::Result<()> {
-                let mut f = if offset == 0 {
-                    std::fs::File::create(&path)?
-                } else {
-                    std::fs::OpenOptions::new().append(true).open(&path)?
-                };
+                // opened with the signed-in user's rights, not SYSTEM's (RULES.md W7)
+                let mut f = crate::service_win::as_user(|| {
+                    if offset == 0 {
+                        std::fs::File::create(&path)
+                    } else {
+                        std::fs::OpenOptions::new().append(true).open(&path)
+                    }
+                })??;
                 f.write_all(&data)
             })();
             match written {
@@ -109,7 +137,7 @@ pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
 /// Sends a file a piece at a time, each after the Mac acknowledged the one before:
 /// only one piece is ever in memory or in the queue (RULES.md X3).
 fn send_file(queue: &Queue, id: u32, path: &str, acks: &mpsc::Receiver<()>) -> std::io::Result<()> {
-    let mut file = std::fs::File::open(path)?;
+    let mut file = crate::service_win::as_user(|| std::fs::File::open(path))??;
     let size = file.metadata()?.len();
     let mut buf = vec![0u8; bridge::CHUNK];
     let mut sent = 0u64;
@@ -130,22 +158,76 @@ fn small_thread(f: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new().stack_size(64 * 1024).spawn(f);
 }
 
+/// A running bridge command: an ordinary child, or one WispService's SYSTEM client
+/// started as the signed-in user (RULES.md W7).
+enum Running {
+    Own(std::process::Child),
+    User(crate::service_win::UserProcess),
+}
+
+impl Running {
+    /// Some(exit code) once it ended
+    fn ended(&mut self) -> Option<i32> {
+        match self {
+            Running::Own(c) => match c.try_wait() {
+                Ok(Some(status)) => Some(status.code().unwrap_or(-1)),
+                Ok(None) => None,
+                Err(_) => Some(-1),
+            },
+            Running::User(p) => crate::service_win::wait(p, 0),
+        }
+    }
+
+    fn kill(&mut self) {
+        match self {
+            Running::Own(c) => {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            Running::User(p) => {
+                crate::service_win::kill(p);
+                crate::service_win::wait(p, 2000);
+            }
+        }
+    }
+}
+
+/// Starts `cmd` through cmd.exe, errors folded into the output. As SYSTEM it runs as
+/// the signed-in user, and is refused when nobody is signed in.
+fn start(cmd: &str) -> Result<(Running, Box<dyn Read + Send>), (i32, String)> {
+    match crate::service_win::UserLaunch::get() {
+        Err(e) => Err((-3, e.to_string())),
+        Ok(Some(user)) => match crate::service_win::spawn_as_user(&user, cmd) {
+            Ok((p, out)) => Ok((Running::User(p), Box::new(out))),
+            Err(e) => Err((-1, format!("启动失败：{e}"))),
+        },
+        Ok(None) => {
+            let child = Command::new("cmd")
+                .raw_arg(format!("/C ({cmd}) 2>&1"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+            match child {
+                Ok(mut c) => {
+                    let out = c.stdout.take().unwrap();
+                    Ok((Running::Own(c), Box::new(out)))
+                }
+                Err(e) => Err((-1, format!("启动失败：{e}"))),
+            }
+        }
+    }
+}
+
 /// Runs `cmd` through cmd.exe, as typed, errors folded into the output; at most
 /// MAX_OUTPUT bytes come back; -2 if it ran past `timeout` seconds and was stopped.
 fn run(cmd: &str, timeout: u32) -> (i32, Vec<u8>) {
-    let child = Command::new("cmd")
-        .raw_arg(format!("/C ({cmd}) 2>&1"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(e) => return (-1, format!("启动失败：{e}").into_bytes()),
+    let (mut child, mut out) = match start(cmd) {
+        Ok(started) => started,
+        Err((code, e)) => return (code, e.into_bytes()),
     };
     let (tx, rx) = mpsc::channel();
-    let mut out = child.stdout.take().unwrap();
     small_thread(move || {
         let mut buf = Vec::new();
         let _ = out.by_ref().take(MAX_OUTPUT as u64).read_to_end(&mut buf);
@@ -155,15 +237,13 @@ fn run(cmd: &str, timeout: u32) -> (i32, Vec<u8>) {
     });
     let deadline = Instant::now() + Duration::from_secs(timeout.max(1) as u64);
     let code = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code().unwrap_or(-1),
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+        match child.ended() {
+            Some(code) => break code,
+            None if Instant::now() >= deadline => {
+                child.kill();
                 break -2;
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
-            Err(_) => break -1,
+            None => std::thread::sleep(Duration::from_millis(30)),
         }
     };
     let mut bytes = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();

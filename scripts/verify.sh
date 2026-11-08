@@ -62,8 +62,10 @@ if (( ${#BRIDGE} == 0 )); then
   exit 0
 fi
 # the background client by its command line: a status window is a wisp process too.
+# WispService's SYSTEM client hides its command line from the user (RULES.md W2): a
+# wisp.exe whose command line cannot be read is that one.
 # A failing remote command must say so, not end this script silently (set -e, pipefail).
-raw=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "$c = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \"wisp.exe\" -and $_.CommandLine -match \" client\" } | Select-Object -First 1; if ($c) { [int]((Get-Process -Id $c.ProcessId).PrivateMemorySize64/1KB) } else { 0 }"' --timeout 30 2>&1) || true
+raw=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "$c = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \"wisp.exe\" -and (-not $_.CommandLine -or $_.CommandLine -match \" client\") } | Select-Object -First 1; if ($c) { [int]((Get-Process -Id $c.ProcessId).PrivateMemorySize64/1KB) } else { 0 }"' --timeout 30 2>&1) || true
 win=$(print -r -- "$raw" | grep -Eo '^[0-9]+' | head -1 || true)
 [[ $win == <1-> ]] || fail "Windows client not running: $raw"
 # read through Wisp's own bridge, the number includes the request doing the reading
@@ -73,6 +75,7 @@ budget=$WIN_BUDGET_KB
 (( win <= budget )) || fail "Windows private memory ${win} KB > ${budget} KB"
 pass "Windows private memory ${win} KB (budget ${budget})"
 
-win_status=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "Get-Content -Encoding UTF8 $env:LOCALAPPDATA\Wisp\status -ErrorAction SilentlyContinue"' --timeout 30 2>&1) || true
+# the newer of the two: WispService's client writes under ProgramData (RULES.md W2)
+win_status=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "$f = Get-Item $env:LOCALAPPDATA\Wisp\status, $env:ProgramData\Wisp\status -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1; if ($f) { Get-Content -Encoding UTF8 $f.FullName }"' --timeout 30 2>&1) || true
 [[ $win_status == *state=connected* ]] || fail "Windows status file does not say connected: $win_status"
 pass "Windows status file says connected"

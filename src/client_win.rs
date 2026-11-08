@@ -68,7 +68,7 @@ fn now() -> u64 {
 }
 
 fn status_file() -> std::path::PathBuf {
-    crate::data_dir().join("status")
+    crate::state_dir().join("status")
 }
 
 fn pair_file() -> std::path::PathBuf {
@@ -90,12 +90,23 @@ pub fn pair(code: &str, port: u16) -> io::Result<String> {
     let paired = pair::join(stream, code, &me)?;
     let tmp = pair_file().with_extension("tmp");
     std::fs::write(&tmp, paired.to_text()).and_then(|_| std::fs::rename(&tmp, pair_file()))?;
+    // WispService's client keeps its own copy, which only an administrator may change (W2)
+    if crate::service_win::installed() {
+        crate::service_win::sync_pair().map_err(|e| io::Error::other(format!("已配对，但锁屏和权限弹窗下要用新配对需要管理员授权（{e}）")))?;
+    }
     Ok(paired.name)
 }
 
 /// The status file as the client last wrote it.
 pub fn read_status() -> Option<String> {
-    std::fs::read_to_string(status_file()).ok()
+    let mut files = vec![status_file()];
+    // the status window, the installer: the service's client writes under ProgramData
+    // (W2); whichever file was written last is the client running now
+    if !is_system() && std::env::var_os("WISP_STATE").is_none() {
+        files.push(crate::service_win::state_dir().join("status"));
+    }
+    let newest = files.into_iter().filter_map(|f| Some((std::fs::metadata(&f).ok()?.modified().ok()?, f))).max_by_key(|(at, _)| *at)?;
+    std::fs::read_to_string(newest.1).ok()
 }
 
 /// Replaces the status file whole (write, then rename), so the window never reads
@@ -124,8 +135,29 @@ const KEY_EXTENDED: u32 = 0x0001;
 const KEY_UP: u32 = 0x0002;
 const KEY_SCANCODE: u32 = 0x0008;
 
+/// Running as WispService's SYSTEM client (`client --system`, RULES.md W2).
+static SYSTEM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this process is WispService's SYSTEM client.
+pub fn is_system() -> bool {
+    SYSTEM.load(std::sync::atomic::Ordering::Relaxed)
+}
+static LAST_FOLLOW: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
 fn send_input(input: Input) {
-    unsafe { SendInput(1, &input, std::mem::size_of::<Input>() as i32) };
+    if SYSTEM.load(std::sync::atomic::Ordering::Relaxed) {
+        // UAC prompts and the lock screen live on another desktop; input sent to the old
+        // one is dropped, and Windows need not say so: look every 300 ms, and on failure
+        let mut last = LAST_FOLLOW.lock().unwrap();
+        if last.is_none_or(|t| t.elapsed() > Duration::from_millis(300)) {
+            crate::service_win::follow_input_desktop();
+            *last = Some(std::time::Instant::now());
+        }
+    }
+    let sent = unsafe { SendInput(1, &input, std::mem::size_of::<Input>() as i32) };
+    if sent == 0 && SYSTEM.load(std::sync::atomic::Ordering::Relaxed) && crate::service_win::follow_input_desktop() {
+        unsafe { SendInput(1, &input, std::mem::size_of::<Input>() as i32) };
+    }
 }
 
 fn send_mouse(dx: i32, dy: i32, data: u32, flags: u32) {
@@ -212,10 +244,21 @@ impl Injector {
     }
 }
 
-pub fn run(server: Option<&str>, port: u16) -> io::Result<()> {
+pub fn run(server: Option<&str>, port: u16, system: bool) -> io::Result<()> {
+    SYSTEM.store(system, std::sync::atomic::Ordering::Relaxed);
+    if system {
+        log!("wisp: 以系统身份运行（WispService），可以控制锁屏和权限弹窗");
+    }
     unsafe { SetProcessDPIAware() };
     let name: Vec<u16> = RUNNING_MUTEX.encode_utf16().chain(Some(0)).collect();
-    unsafe { CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr()) };
+    // as SYSTEM, the user's status window and installer must still see it (W3)
+    let attrs = if system { crate::service_win::open_to_user() } else { std::ptr::null_mut() };
+    unsafe { CreateMutexW(attrs, 0, name.as_ptr()) };
+    const ERROR_ALREADY_EXISTS: i32 = 183;
+    if system && io::Error::last_os_error().raw_os_error() == Some(ERROR_ALREADY_EXISTS) {
+        // a per-user client got in first (the service was stopped): it gives way (W6)
+        crate::install_win::stop_user_client();
+    }
     let shell = Shell::spawn();
     report(&shell, Status { since: now(), ..Status::default() });
     let mut finder = Finder { server, port, psk: [0; 32], known: None };

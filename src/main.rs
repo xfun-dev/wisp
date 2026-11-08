@@ -38,6 +38,8 @@ mod gdiplus_win;
 #[cfg(windows)]
 mod install_win;
 #[cfg(windows)]
+mod service_win;
+#[cfg(windows)]
 mod status_win;
 #[cfg(windows)]
 mod win32;
@@ -106,8 +108,25 @@ fn write_log(args: std::fmt::Arguments) {
 }
 
 /// ~/.config/wisp on macOS, %LOCALAPPDATA%\Wisp on Windows.
+/// Where this process writes its status and log: the data folder, except for
+/// WispService's SYSTEM client, which is given a folder only administrators can
+/// change (RULES.md W2).
+#[cfg(windows)]
+fn state_dir() -> PathBuf {
+    std::env::var_os("WISP_STATE").map_or_else(data_dir, PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn state_dir() -> PathBuf {
+    data_dir()
+}
+
 fn data_dir() -> PathBuf {
     if cfg!(windows) {
+        // WispService's SYSTEM client is told where the user's Wisp folder is (RULES.md W1)
+        if let Some(dir) = std::env::var_os("WISP_DATA") {
+            return PathBuf::from(dir);
+        }
         PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Wisp")
     } else {
         PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/wisp")
@@ -125,19 +144,43 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("status") => return status_win::run(),
         // double-clicked: Wisp.exe installs itself (RULES.md I1)
-        None => install_win::install(false),
-        Some("install") => install_win::install(args.iter().any(|a| a == "--quiet")),
+        None => install_win::install(false, false),
+        Some("install") => install_win::install(args.iter().any(|a| a == "--quiet"), args.iter().any(|a| a == "--user-only")),
         Some("uninstall") => install_win::uninstall(args.iter().any(|a| a == "--quiet")),
+        // control on the secure desktop (RULES.md W1): the service, and setting it up as an administrator
+        Some("service") => return service_win::run(),
+        Some(op @ ("service-install" | "service-uninstall" | "service-switch" | "service-pair")) => {
+            let r = match op {
+                "service-install" => service_win::install(args.get(1).map_or("-", String::as_str)),
+                "service-pair" => service_win::set_pair(args.get(1).map_or("", String::as_str)),
+                "service-uninstall" => service_win::uninstall(),
+                // from the tray menu, as the user: one UAC prompt (W1)
+                _ => service_win::switch(args.get(1).map(String::as_str) == Some("on")),
+            };
+            std::process::exit(match r {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("wisp: {e}");
+                    1
+                }
+            });
+        }
         _ => {}
     }
     #[cfg(target_os = "macos")]
     if args.first().map(String::as_str) == Some("pasteboard") {
         std::process::exit(pasteboard_mac::helper(&args[1..]));
     }
+    // with WispService on, its SYSTEM client is the one that runs: starting Wisp only
+    // lifts an earlier quit, and the service starts it within a second (RULES.md W6)
+    #[cfg(windows)]
+    if args.first().map(String::as_str) == Some("client") && !args.iter().any(|a| a == "--system") && service_win::wake() {
+        return;
+    }
     // only the background client logs to a file (launchd captures the Mac server's
     // stderr); a status window starting must not truncate the client's log
     if cfg!(windows) && args.first().map(String::as_str) == Some("client") {
-        if let Ok(f) = File::create(data_dir().join("wisp.log")) {
+        if let Ok(f) = File::create(state_dir().join("wisp.log")) {
             let _ = LOG_FILE.set(Mutex::new(f));
         }
     }
@@ -162,7 +205,7 @@ fn main() {
         #[cfg(all(target_os = "macos", feature = "bridge"))]
         Some("win") => std::process::exit(win(&args[1..])),
         #[cfg(windows)]
-        Some("client") => client_win::run(opt("--server").as_deref(), port),
+        Some("client") => client_win::run(opt("--server").as_deref(), port, args.iter().any(|a| a == "--system")),
         #[cfg(windows)]
         Some("pair") => match args.get(1).and_then(|c| logic::pairing::typed(c)) {
             Some(code) => match client_win::pair(&code, port) {

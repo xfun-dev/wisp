@@ -13,6 +13,8 @@ pub mod icon;
 pub mod press;
 #[cfg(any(test, windows))]
 pub mod replay;
+#[cfg(any(test, windows))]
+pub mod service;
 #[cfg(any(test, target_os = "macos"))]
 pub mod settings;
 #[cfg(any(test, windows))]

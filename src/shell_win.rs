@@ -78,6 +78,7 @@ extern "system" {
     fn DestroyMenu(menu: *mut c_void) -> i32;
     fn SetForegroundWindow(hwnd: Hwnd) -> i32;
     fn FindWindowW(class: *const u16, title: *const u16) -> Hwnd;
+    fn ChangeWindowMessageFilterEx(hwnd: Hwnd, msg: u32, action: u32, info: *mut c_void) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -134,6 +135,9 @@ const TPM_RIGHTBUTTON: u32 = 0x2;
 const TPM_RETURNCMD: u32 = 0x100;
 const MENU_OPEN: usize = 1;
 const MENU_QUIT: usize = 2;
+const MENU_SERVICE: usize = 3;
+const MF_CHECKED: u32 = 0x8;
+const MSGFLT_ALLOW: u32 = 1;
 /// side of the square kept under the pointer, in pixels
 const CLOAK_SIZE: i32 = 64;
 
@@ -223,13 +227,25 @@ fn open_status() {
             SetForegroundWindow(existing);
         }
     } else if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).arg("status").spawn();
+        // from WispService's SYSTEM client, the window still opens as the user (W4)
+        let _ = crate::service_win::run_as_user(&exe, "status");
+    }
+}
+
+/// Switches WispService on or off: a separate `service-switch` run as the user asks
+/// for the administrator (UAC) and does it (RULES.md W1).
+fn switch_service(on: bool) {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = crate::service_win::run_as_user(&exe, if on { "service-switch on" } else { "service-switch off" });
     }
 }
 
 unsafe fn tray_menu(hwnd: Hwnd) {
     let menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, MENU_OPEN, wide("打开状态窗口").as_ptr());
+    let service = crate::service_win::installed();
+    let check = if service { MF_CHECKED } else { 0 };
+    AppendMenuW(menu, MF_STRING | check, MENU_SERVICE, wide("锁屏和权限弹窗也能控制").as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
     AppendMenuW(menu, MF_STRING, MENU_QUIT, wide("退出 Wisp").as_ptr());
     let mut p = Point::default();
@@ -241,6 +257,7 @@ unsafe fn tray_menu(hwnd: Hwnd) {
     DestroyMenu(menu);
     match chosen {
         MENU_OPEN => open_status(),
+        MENU_SERVICE => switch_service(!service),
         MENU_QUIT => quit("托盘"),
         _ => {}
     }
@@ -249,12 +266,14 @@ unsafe fn tray_menu(hwnd: Hwnd) {
 /// Quits the client, closing the status window too; only a crash leaves it up, saying so.
 unsafe fn quit(from: &str) -> ! {
     log!("wisp: 用户从{from}退出");
+
     let window = status_window();
     if !window.is_null() {
         PostMessageW(window, WM_CLOSE, 0, 0);
     }
     update_tray(NIM_DELETE);
-    std::process::exit(0);
+    // as WispService's client, the exit code tells the service not to start it again (W6)
+    std::process::exit(if crate::client_win::is_system() { crate::service_win::QUIT_EXIT as i32 } else { 0 });
 }
 
 unsafe extern "system" fn cloak_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
@@ -322,6 +341,14 @@ impl Shell {
                         taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
                     })
                 });
+                if crate::client_win::is_system() {
+                    // as SYSTEM, messages from Explorer and the user's status window
+                    // are filtered out unless allowed (W3)
+                    let taskbar = TRAY.with(|t| t.borrow().as_ref().map_or(0, |t| t.taskbar_created));
+                    for m in [WM_TRAY, WM_QUIT_WISP, taskbar] {
+                        ChangeWindowMessageFilterEx(hwnd, m, MSGFLT_ALLOW, ptr::null_mut());
+                    }
+                }
                 update_tray(NIM_ADD);
             }
             let _ = ready.send(GetCurrentThreadId());

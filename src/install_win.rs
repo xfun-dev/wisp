@@ -91,7 +91,28 @@ fn client_running() -> bool {
 }
 
 /// Asks a running client (and its status window) to quit, and waits until it has.
-fn stop_running() {
+/// Closes the status window, leaving the client alone.
+fn close_status_window() {
+    unsafe {
+        let status = FindWindowW(wide("WispStatus").as_ptr(), ptr::null());
+        if !status.is_null() {
+            PostMessageW(status, WM_CLOSE, 0, 0);
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// Asks the per-user client to quit, without waiting for the shared running mark.
+pub fn stop_user_client() {
+    unsafe {
+        let tray = FindWindowW(wide("WispTray").as_ptr(), ptr::null());
+        if !tray.is_null() {
+            PostMessageW(tray, crate::shell_win::WM_QUIT_WISP, 0, 0);
+        }
+    }
+}
+
+pub fn stop_running() {
     unsafe {
         let status = FindWindowW(wide("WispStatus").as_ptr(), ptr::null());
         if !status.is_null() {
@@ -231,9 +252,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn register(exe: &Path) -> io::Result<()> {
+fn register(exe: &Path, logon_start: bool) -> io::Result<()> {
     let quoted = format!("\"{}\"", exe.display());
-    reg_set(RUN_KEY, &[("Wisp", Value::Text(format!("{quoted} client")))])?;
+    if logon_start {
+        reg_set(RUN_KEY, &[("Wisp", Value::Text(format!("{quoted} client")))])?;
+    }
     let size_kb = std::fs::metadata(exe).map_or(0, |m| (m.len() / 1024) as u32);
     reg_set(UNINSTALL_KEY, &[
         ("DisplayName", Value::Text("Wisp".into())),
@@ -251,19 +274,55 @@ fn register(exe: &Path) -> io::Result<()> {
     make_shortcut(&start_menu_link(), exe, "status")
 }
 
+/// WispService has taken over (RULES.md W1): the per-user client no longer starts
+/// at logon, so the two never fight over the link.
+pub fn remove_run_key() {
+    let mut key = 0isize;
+    unsafe {
+        if RegCreateKeyExW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), 0, ptr::null(), 0, KEY_WRITE, ptr::null_mut(), &mut key, ptr::null_mut()) == 0 {
+            RegDeleteValueW(key, wide("Wisp").as_ptr());
+            RegCloseKey(key);
+        }
+    }
+}
+
+/// The per-user client starts at logon again; returns its exe.
+pub fn restore_run_key() -> io::Result<PathBuf> {
+    let exe = install_dir().join("wisp.exe");
+    reg_set(RUN_KEY, &[("Wisp", Value::Text(format!("\"{}\" client", exe.display())))])?;
+    Ok(exe)
+}
+
 /// Installs (or updates) this exe and opens the status window, unless `quiet`.
-pub fn install(quiet: bool) -> ! {
+/// `user_only` (developer deploys, RULES.md X1): with WispService on, update only this
+/// user's copy; the service's arrives over the bridge.
+pub fn install(quiet: bool, user_only: bool) -> ! {
     keep_handles_to_myself();
     let dir = install_dir();
     let exe = dir.join("wisp.exe");
     let result = (|| -> io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         let current = std::env::current_exe()?;
+        if crate::service_win::installed() {
+            // WispService runs the client from Program Files: this user's copy (status
+            // window, menus) is updated here, the service's with one UAC prompt (W5).
+            // No logon start, and the service's client is not asked to quit.
+            if !same_file(&current, &exe) {
+                close_status_window();
+                copy_self(&exe)?;
+            }
+            register(&exe, false)?;
+            if !user_only {
+                crate::service_win::elevated(&format!("service-install {}", crate::service_win::user_pair_arg()))
+                    .map_err(|e| io::Error::other(format!("开着「锁屏和权限弹窗也能控制」时，更新需要管理员授权（{e}）")))?;
+            }
+            return Ok(());
+        }
         if !same_file(&current, &exe) {
             stop_running();
             copy_self(&exe)?;
         }
-        register(&exe)?;
+        register(&exe, true)?;
         if !client_running() {
             detached(&exe, "client")?;
         }
@@ -289,6 +348,15 @@ pub fn install(quiet: bool) -> ! {
 /// still running here) is removed by a short-lived cmd after this process exits.
 pub fn uninstall(quiet: bool) -> ! {
     keep_handles_to_myself();
+    // WispService goes first, as administrator (one UAC prompt); without it, nothing is removed
+    if crate::service_win::installed() {
+        if let Err(e) = crate::service_win::elevated("service-uninstall") {
+            if !quiet {
+                message(&format!("Wisp 没有卸载：{e}"), true);
+            }
+            std::process::exit(1);
+        }
+    }
     stop_running();
     let mut key = 0isize;
     unsafe {

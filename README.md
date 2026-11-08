@@ -17,6 +17,7 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 - **Clipboard sync**: plain text both ways, up to 1 MB, skipping anything a password manager marks as sensitive
 - **Pairing and encryption**: automatic discovery on the local network, pairing with a 6-digit code (SPAKE2), traffic encrypted with ChaCha20-Poly1305
 - **Lightweight**: about 3 MB of memory on the Mac and 2 MB on Windows; written in Rust, no runtime
+- **Lock screen and UAC**: optionally (from the tray menu, one administrator approval), the Mac can also type on the Windows lock screen and sign-in screen and click UAC prompts, so the PC needs no keyboard or mouse of its own
 - **Failsafe**: if the background process stalls for more than 1.5 s, a watchdog hands the keyboard and mouse back to the Mac
 
 <table>
