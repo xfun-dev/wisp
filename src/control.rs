@@ -64,7 +64,7 @@ pub enum Command {
     Unpair,
     /// test only: block the event thread for this many milliseconds (RULES.md S4)
     DebugStall(u64),
-    /// developer bridge (RULES.md X1): open for 8 hours, or close
+    /// developer bridge (RULES.md X1): open until closed, or close
     #[cfg(feature = "bridge")]
     Bridge(bool),
     /// developer bridge: run a command on the PC (timeout in seconds, hex command)
@@ -227,11 +227,11 @@ impl Live {
     }
 }
 
-/// `\tbridge=<seconds left>` in builds with the developer bridge, nothing otherwise:
+/// `\tbridge=1` (open) or `0` in builds with the developer bridge, nothing otherwise:
 /// the settings window offers its hidden switch only when the field is there.
 fn bridge_field() -> String {
     #[cfg(feature = "bridge")]
-    return format!("\tbridge={}", crate::bridge_mac::left());
+    return format!("\tbridge={}", crate::bridge_mac::is_open() as u8);
     #[cfg(not(feature = "bridge"))]
     String::new()
 }
@@ -375,7 +375,7 @@ mod tests {
         assert!(request("secret", port, "set speed=99").unwrap().starts_with("error 鼠标速度"));
         let status = request("secret", port, "status").unwrap();
         let fields = "ok\tstate=waiting\tpaused=true\tedge=left\tspeed=1\tscroll=3\tpaired=\tpairing=\tpair_left=0\tpair_tries=0";
-        // a build with the developer bridge adds `\tbridge=<seconds>` (RULES.md X1)
+        // a build with the developer bridge adds `\tbridge=1` or `0` (RULES.md X1)
         assert!(status == fields || status.strip_prefix(fields).is_some_and(|rest| rest.starts_with("\tbridge=")), "{status}");
 
         let reloaded = Live::load(dir.clone());

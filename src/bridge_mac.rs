@@ -1,10 +1,9 @@
 //! Mac side of the developer bridge (RULES.md X1–X5), built only with the `bridge`
 //! feature. The control port (`wisp win …`, the settings window's hidden switch) opens
 //! or closes it and sends requests; the connected PC runs them and answers over the
-//! same encrypted link. Open means: until a time at most 8 hours away, kept in the
-//! data directory's `bridge` file so a restart of the core does not reopen or close it.
+//! same encrypted link. It stays open until switched off: the data directory's `bridge`
+//! file says `on`, so a restart of the core or a new link keeps it as it was.
 
-use crate::control::now;
 use crate::logic::bridge::{self, Bridge};
 use crate::proto::Msg;
 use std::collections::HashMap;
@@ -33,25 +32,22 @@ fn send(msg: Bridge) -> bool {
     SEND.get().is_some_and(|f| f(Msg::Bridge(msg.encode())))
 }
 
-/// Seconds left before the bridge closes, 0 if closed.
-pub fn left() -> u64 {
-    let until = std::fs::read_to_string(file()).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
-    bridge::left(now(), until)
+/// Whether the bridge is open.
+pub fn is_open() -> bool {
+    std::fs::read_to_string(file()).is_ok_and(|t| t.trim() == "on")
 }
 
-/// Opens the bridge for 8 hours, or closes it, and tells the PC.
-pub fn set(on: bool) -> io::Result<u64> {
-    let until = if on { bridge::until(now(), bridge::LIFETIME_SECS) } else { 0 };
-    std::fs::write(file(), until.to_string())?;
-    let secs = left();
-    log!("wisp: 开发者通道{}", if on { "已开启（8 小时后自动关闭）" } else { "已关闭" });
-    send(Bridge::State { secs });
-    Ok(secs)
+/// Opens or closes the bridge until told otherwise, and tells the PC.
+pub fn set(on: bool) -> io::Result<()> {
+    std::fs::write(file(), if on { "on" } else { "off" })?;
+    log!("wisp: 开发者通道{}", if on { "已开启" } else { "已关闭" });
+    send(Bridge::State { open: on });
+    Ok(())
 }
 
 /// A PC just connected: tell it whether the bridge is open.
 pub fn on_connect() {
-    send(Bridge::State { secs: left() });
+    send(Bridge::State { open: is_open() });
 }
 
 /// The link dropped: every request still waiting fails at once.
@@ -85,7 +81,7 @@ struct Request {
 
 impl Request {
     fn new() -> io::Result<Request> {
-        if left() == 0 {
+        if !is_open() {
             return Err(io::Error::other("开发者通道没有开启（在 Wisp 设置里点两下花盆、一下茶杯）"));
         }
         let id = NEXT.fetch_add(1, Ordering::Relaxed);

@@ -231,7 +231,7 @@ struct Status: Equatable {
     var code = ""
     var codeSecondsLeft = 0
     var codeTriesLeft = 0
-    /// developer bridge seconds left; nil in a core built without it (RULES.md X1)
+    /// developer bridge: 1 open, 0 closed; nil in a core built without it (RULES.md X1)
     var bridge: Int?
 
     init?(reply: String) {
@@ -999,8 +999,8 @@ struct WallSign: View {
                     .frame(maxWidth: 260, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let left = s?.bridge, left > 0 {
-                Text("开发者通道已开启 · 剩 \(left / 3600) 小时 \(left % 3600 / 60) 分")
+            if let open = s?.bridge, open > 0 {
+                Text("开发者通道已开启")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color(hex: Clay.teal))
                     .padding(.leading, 20)
@@ -1301,7 +1301,7 @@ struct SettingsView: View {
             ZStack(alignment: .topLeading) {
                 DeskScene(mood: s.map(Mood.init) ?? .searching, edge: s?.edge ?? "top", name: s?.paired ?? "",
                           bridge: (s?.bridge ?? 0) > 0,
-                          secret: s?.bridge.map { left in { core.send(["bridge", left > 0 ? "off" : "on"]) } })
+                          secret: s?.bridge.map { open in { core.send(["bridge", open > 0 ? "off" : "on"]) } })
                 WallSign(s: s, problem: core.problem)
                     .padding(.leading, 24)
                     .padding(.top, 16)

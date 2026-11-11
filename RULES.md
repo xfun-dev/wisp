@@ -144,9 +144,9 @@
 |---|---|---|
 | X1 | 开发者通道让已配对的 Mac 在 Windows 上执行命令、收发文件，供部署和测试使用，取代外部远程工具。**只在 `bridge` 编译开关打开时编入**。普通版不带；Releases 另外提供开发者版（文件名带 `-dev`），由用户按需下载，两端都装开发者版才能使用。`scripts/deploy.sh` 给自己的机器装开发者版。`scripts/release.sh` 一次打两套，并按字节检查：普通版里有通道代码、或开发者版里没有，都拒绝打包 | release.sh 的检查 |
 | X2 | 开启方式：Mac 设置窗口里点两下花盆、一下茶杯（3 秒内），再点一次同样的顺序关闭；或 `wisp win on/off`。只有后台带通道时（状态里有 `bridge=` 字段）这个手势才有反应 | 实测 |
-| X3 | 一次开启最多 8 小时，到期自动关闭（Mac 和 Windows 各自按时间判断，Windows 不接受超过 8 小时的请求）；Windows 只在开启期间执行请求，否则拒绝。命令在独立线程里执行，不耽误键鼠。文件按 12 KB 一块传，每块等对方确认再发下一块，任何时候只有一块在途：大块或不限速会让两端内存上涨（实测 768 KB 块让 Mac 后台到 5 MB；16 KB 块让 Windows 每次多 260 KB 且持续增长；12 KB 只多 56 KB 且稳定）。连接一断，所有等待中的请求立即失败 | `every_bridge_message_round_trips`、`the_bridge_never_stays_open_longer_than_eight_hours`、`a_piece_fits_well_inside_a_frame` |
+| X3 | 开了就一直开着，直到用户关闭，不限时（用户 2026-11-11）。开关记在 Mac 数据目录的 `bridge` 文件里，Mac 后台重启、断线重连后保持原样；Windows 每次新连接先当作关闭，等 Mac 告知。Windows 只在开启期间执行请求，否则拒绝。命令在独立线程里执行，不耽误键鼠。文件按 12 KB 一块传，每块等对方确认再发下一块，任何时候只有一块在途：大块或不限速会让两端内存上涨（实测 768 KB 块让 Mac 后台到 5 MB；16 KB 块让 Windows 每次多 260 KB 且持续增长；12 KB 只多 56 KB 且稳定）。连接一断，所有等待中的请求立即失败 | `every_bridge_message_round_trips`、`the_bridge_stays_as_the_mac_last_set_it`、`a_piece_fits_well_inside_a_frame` |
 | X4 | 命令行：`wisp win put <本地> <远程>`、`get <远程> <本地>`、`exec "<命令>" [--timeout 秒]`（经 cmd.exe，输出与错误合并，最多 64 KB，退出码原样返回，超时为 -2）。`scripts/local.env` 的 `WISP_WIN_BRIDGE` 指向它 | 实测 |
-| X5 | 通道开着时一定看得见：Mac 茶杯的热气变青色、墙上写“开发者通道已开启 · 剩余时间”；Windows 状态窗口同样显示 | `an_open_bridge_is_always_on_show` |
+| X5 | 通道开着时一定看得见：Mac 茶杯的热气变青色、墙上写“开发者通道已开启”；Windows 状态窗口同样显示 | `an_open_bridge_is_always_on_show` |
 
 ## 5g. 锁屏和权限弹窗（Windows 系统服务，可选）
 

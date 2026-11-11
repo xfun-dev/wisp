@@ -15,8 +15,8 @@ pub struct Status {
     pub problem: String,
     /// no pairing on this machine yet (RULES.md P6)
     pub unpaired: bool,
-    /// unix time the developer bridge closes, 0 when closed (RULES.md X5)
-    pub bridge_until: u64,
+    /// the developer bridge is open (RULES.md X5)
+    pub bridge: bool,
 }
 
 impl Status {
@@ -25,8 +25,8 @@ impl Status {
         let problem = self.problem.replace('\n', " ");
         let name = self.name.replace('\n', " ");
         format!(
-            "state={state}\npeer={}\nname={name}\nsince={}\nproblem={problem}\nunpaired={}\nbridge_until={}\n",
-            self.peer, self.since, self.unpaired as u8, self.bridge_until
+            "state={state}\npeer={}\nname={name}\nsince={}\nproblem={problem}\nunpaired={}\nbridge={}\n",
+            self.peer, self.since, self.unpaired as u8, self.bridge as u8
         )
     }
 
@@ -40,7 +40,7 @@ impl Status {
                 Some(("since", v)) => s.since = v.parse().unwrap_or(0),
                 Some(("problem", v)) => s.problem = v.to_string(),
                 Some(("unpaired", v)) => s.unpaired = v == "1",
-                Some(("bridge_until", v)) => s.bridge_until = v.parse().unwrap_or(0),
+                Some(("bridge", v)) => s.bridge = v == "1",
                 _ => {}
             }
         }
@@ -74,20 +74,19 @@ pub struct View {
     pub headline: String,
     pub detail: String,
     pub tray: Tray,
-    /// "开发者通道已开启 · 剩 7 小时 59 分" while the Mac has the bridge open (RULES.md X5)
+    /// "开发者通道已开启" while the Mac has the bridge open (RULES.md X5)
     pub bridge: Option<String>,
 }
 
 /// The bridge line: shown whenever the bridge is open, so it is never on unnoticed.
 #[cfg(not(any(test, feature = "bridge")))]
-fn bridge_line(_: &Status, _: u64) -> Option<String> {
+fn bridge_line(_: &Status) -> Option<String> {
     None
 }
 
 #[cfg(any(test, feature = "bridge"))]
-fn bridge_line(s: &Status, now: u64) -> Option<String> {
-    let left = s.bridge_until.saturating_sub(now);
-    (s.connected && left > 0).then(|| format!("开发者通道已开启 · 剩 {}", crate::logic::bridge::left_words(left)))
+fn bridge_line(s: &Status) -> Option<String> {
+    (s.connected && s.bridge).then(|| "开发者通道已开启".to_string())
 }
 
 fn duration(secs: u64) -> String {
@@ -118,7 +117,7 @@ pub fn describe(file: Option<&str>, running: bool, now: u64) -> View {
             headline,
             detail: "Mac 的光标越过屏幕边缘，就会来到这里".into(),
             tray: Tray::Connected { since: duration(now.saturating_sub(s.since)), host },
-            bridge: bridge_line(&s, now),
+            bridge: bridge_line(&s),
         }
     } else if s.unpaired {
         View {
@@ -181,10 +180,11 @@ mod tests {
 
     #[test]
     fn an_open_bridge_is_always_on_show() {
-        let s = Status { connected: true, since: 0, bridge_until: 10_000, ..Status::default() };
+        let s = Status { connected: true, since: 0, bridge: true, ..Status::default() };
         assert_eq!(Status::parse(&s.to_text()), s);
-        assert_eq!(describe(Some(&s.to_text()), true, 10_000 - 3600).bridge.as_deref(), Some("开发者通道已开启 · 剩 1 小时 0 分"));
-        assert_eq!(describe(Some(&s.to_text()), true, 10_000).bridge, None, "expired: gone without a word from the Mac");
+        assert_eq!(describe(Some(&s.to_text()), true, 365 * 86_400).bridge.as_deref(), Some("开发者通道已开启"), "no time limit");
         assert_eq!(describe(Some(&s.to_text()), false, 0).bridge, None);
+        let closed = Status { bridge: false, ..s };
+        assert_eq!(describe(Some(&closed.to_text()), true, 0).bridge, None);
     }
 }

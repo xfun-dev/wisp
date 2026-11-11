@@ -363,7 +363,7 @@ fn session(
         #[cfg(feature = "bridge")]
         Msg::Bridge(bytes) => {
             if crate::bridge_win::handle(&bytes, &queue) {
-                status.bridge_until = crate::bridge_win::until();
+                status.bridge = crate::bridge_win::is_open();
                 report(shell, status.clone());
             }
         }

@@ -1,6 +1,6 @@
 //! Windows side of the developer bridge (RULES.md X1–X5), built only with the
 //! `bridge` feature. Requests are refused unless the connected Mac has opened the
-//! bridge and its 8 hours are not up; commands and file reads run on their own
+//! bridge; commands and file reads run on their own
 //! threads so input injection never waits for them.
 
 use crate::logic::bridge::{self, Bridge};
@@ -9,9 +9,9 @@ use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_OUTPUT: usize = bridge::MAX_OUTPUT;
@@ -21,24 +21,17 @@ const UPDATE_PATH: &str = "wisp:update";
 /// Files being sent to the Mac, each waiting for the Mac's Ack of its last piece.
 static SENDING: Mutex<Option<HashMap<u32, mpsc::Sender<()>>>> = Mutex::new(None);
 
-/// Unix time the bridge closes; 0 closed. Set only by the Mac, reset on every new link.
-static UNTIL: AtomicU64 = AtomicU64::new(0);
+/// Open or closed, as the Mac last said; closed again on every new link until the Mac
+/// (which remembers its switch) says otherwise.
+static OPEN: AtomicBool = AtomicBool::new(false);
 
-fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-pub fn until() -> u64 {
-    UNTIL.load(Ordering::Relaxed)
+pub fn is_open() -> bool {
+    OPEN.load(Ordering::Relaxed)
 }
 
 /// A new link: closed until the Mac says otherwise.
 pub fn reset() {
-    UNTIL.store(0, Ordering::Relaxed);
-}
-
-fn open() -> bool {
-    bridge::left(now(), until()) > 0
+    OPEN.store(false, Ordering::Relaxed);
 }
 
 fn answer(queue: &Queue, msg: Bridge) {
@@ -54,13 +47,12 @@ fn refuse(queue: &Queue, id: u32) {
 pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
     let Some(msg) = Bridge::decode(bytes) else { return false };
     match msg {
-        Bridge::State { secs } => {
-            let next = if secs == 0 { 0 } else { bridge::until(now(), secs) };
-            let was = UNTIL.swap(next, Ordering::Relaxed);
-            log!("wisp: 开发者通道{}", if next > 0 { "已开启" } else { "已关闭" });
-            return (was > 0) != (next > 0) || was != next;
+        Bridge::State { open } => {
+            let was = OPEN.swap(open, Ordering::Relaxed);
+            log!("wisp: 开发者通道{}", if open { "已开启" } else { "已关闭" });
+            return was != open;
         }
-        Bridge::Exec { id, .. } | Bridge::Put { id, .. } | Bridge::Get { id, .. } if !open() => refuse(queue, id),
+        Bridge::Exec { id, .. } | Bridge::Put { id, .. } | Bridge::Get { id, .. } if !is_open() => refuse(queue, id),
         Bridge::Exec { id, timeout, cmd } => {
             let queue = queue.clone();
             small_thread(move || {
