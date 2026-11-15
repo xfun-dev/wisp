@@ -40,7 +40,7 @@ pub fn is_open() -> bool {
 /// Opens or closes the bridge until told otherwise, and tells the PC.
 pub fn set(on: bool) -> io::Result<()> {
     std::fs::write(file(), if on { "on" } else { "off" })?;
-    log!("wisp: 开发者通道{}", if on { "已开启" } else { "已关闭" });
+    log!("wisp: developer bridge {}", if on { "on" } else { "off" });
     send(Bridge::State { open: on });
     Ok(())
 }
@@ -82,7 +82,7 @@ struct Request {
 impl Request {
     fn new() -> io::Result<Request> {
         if !is_open() {
-            return Err(io::Error::other("开发者通道没有开启（在 Wisp 设置的“···”菜单里打开）"));
+            return Err(io::Error::other("the developer bridge is off (switch it on in the ··· menu of Wisp's window)"));
         }
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
@@ -91,13 +91,13 @@ impl Request {
     }
 
     fn send(&self, msg: Bridge) -> io::Result<()> {
-        if send(msg) { Ok(()) } else { Err(io::Error::other("Windows 没有连接")) }
+        if send(msg) { Ok(()) } else { Err(io::Error::other("Windows is not connected")) }
     }
 
     fn next(&self, wait: Duration) -> io::Result<Bridge> {
         self.rx.recv_timeout(wait).map_err(|e| match e {
-            mpsc::RecvTimeoutError::Timeout => io::Error::new(io::ErrorKind::TimedOut, "Windows 没有在时限内回答"),
-            mpsc::RecvTimeoutError::Disconnected => io::Error::other("与 Windows 的连接断开了"),
+            mpsc::RecvTimeoutError::Timeout => io::Error::new(io::ErrorKind::TimedOut, "Windows did not answer in time"),
+            mpsc::RecvTimeoutError::Disconnected => io::Error::other("the link to Windows dropped"),
         })
     }
 }
@@ -148,7 +148,7 @@ pub fn put(from: &str, to: &str) -> io::Result<()> {
         match r.next(STEP)? {
             Bridge::Ack { .. } if !last => {}
             Bridge::Done { code, data, .. } => return failed(code, &data),
-            _ => return Err(io::Error::other("Windows 的回答不对")),
+            _ => return Err(io::Error::other("Windows answered with something unexpected")),
         }
     }
 }

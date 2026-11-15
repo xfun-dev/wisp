@@ -3,6 +3,7 @@
 //! answered with one line starting with `ok` or `error`. A status line carries
 //! tab-separated `key=value` fields, since names contain spaces.
 
+use crate::i18n::{tr, trf, T};
 use crate::logic::pairing::{code_from, Paired, Window};
 use crate::logic::settings::Settings;
 use std::io::{self, BufRead, BufReader, Write};
@@ -99,22 +100,22 @@ pub fn parse(line: &str) -> Result<Command, String> {
         ["pair"] => Ok(Command::Pair),
         ["pair-cancel"] => Ok(Command::PairCancel),
         ["unpair"] => Ok(Command::Unpair),
-        ["debug-stall", ms] => ms.parse().map(Command::DebugStall).map_err(|_| "用法：debug-stall 毫秒".into()),
+        ["debug-stall", ms] => ms.parse().map(Command::DebugStall).map_err(|_| "usage: debug-stall <milliseconds>".into()),
         #[cfg(feature = "bridge")]
         ["bridge", on @ ("on" | "off")] => Ok(Command::Bridge(*on == "on")),
         #[cfg(feature = "bridge")]
         ["bridge-exec", t, cmd] => {
-            let text = unhex(cmd).and_then(|b| String::from_utf8(b).ok()).ok_or("命令要用十六进制")?;
-            Ok(Command::BridgeExec(t.parse().map_err(|_| "超时要是秒数")?, text))
+            let text = unhex(cmd).and_then(|b| String::from_utf8(b).ok()).ok_or("the command must be hex")?;
+            Ok(Command::BridgeExec(t.parse().map_err(|_| "the timeout must be seconds")?, text))
         }
         #[cfg(feature = "bridge")]
         [op @ ("bridge-put" | "bridge-get"), a, b] => {
-            let path = |h: &str| unhex(h).and_then(|b| String::from_utf8(b).ok()).ok_or("路径要用十六进制");
+            let path = |h: &str| unhex(h).and_then(|b| String::from_utf8(b).ok()).ok_or("paths must be hex");
             let (a, b) = (path(a)?, path(b)?);
             Ok(if *op == "bridge-put" { Command::BridgePut(a, b) } else { Command::BridgeGet(a, b) })
         }
-        ["set", kv] => kv.split_once('=').map(|(k, v)| Command::Set(k.into(), v.into())).ok_or("用法：set 设置=值".into()),
-        _ => Err(format!("不认识的命令：{}", line.trim())),
+        ["set", kv] => kv.split_once('=').map(|(k, v)| Command::Set(k.into(), v.into())).ok_or("usage: set <setting>=<value>".into()),
+        _ => Err(format!("unknown command: {}", line.trim())),
     }
 }
 
@@ -199,27 +200,27 @@ impl Live {
                 // the event thread reads settings on every move: never hold the lock over disk I/O
                 let mut next = self.settings();
                 next.set(&key, &value)?;
-                save(&self.dir.join("config"), &next.to_text()).map_err(|e| format!("保存设置失败：{e}"))?;
+                save(&self.dir.join("config"), &next.to_text()).map_err(|e| trf(T::SaveFailed, &[&e]))?;
                 *self.settings.lock().unwrap() = next;
             }
             Command::Pause => self.paused.store(true, Ordering::Relaxed),
             Command::Resume => self.paused.store(false, Ordering::Relaxed),
             Command::Pair => {
                 let mut raw = [0u8; 4];
-                getrandom::getrandom(&mut raw).map_err(|_| "无法生成配对码".to_string())?;
+                getrandom::getrandom(&mut raw).map_err(|_| tr(T::CodeFailed).to_string())?;
                 let code = code_from(u32::from_le_bytes(raw));
                 *self.pairing.lock().unwrap() = Some(Window::open(code.clone(), now()));
                 return Ok(format!("ok code={code}"));
             }
             Command::PairCancel => *self.pairing.lock().unwrap() = None,
             Command::Unpair => {
-                self.set_paired(None).map_err(|e| format!("解除配对失败：{e}"))?;
+                self.set_paired(None).map_err(|e| trf(T::UnpairFailed, &[&e]))?;
                 drop_link();
             }
             Command::Status | Command::Quit | Command::DebugStall(_) => {}
             #[cfg(feature = "bridge")]
             Command::Bridge(on) => {
-                crate::bridge_mac::set(on).map_err(|e| format!("开发者通道：{e}"))?;
+                crate::bridge_mac::set(on).map_err(|e| trf(T::BridgeFailed, &[&e]))?;
             }
             #[cfg(feature = "bridge")]
             Command::BridgeExec(..) | Command::BridgePut(..) | Command::BridgeGet(..) => {}
@@ -297,7 +298,7 @@ fn session(stream: TcpStream, token: &str, live: &Live, link: &Link) -> io::Resu
     let mut out = stream.try_clone()?;
     let mut lines = BufReader::with_capacity(256, stream).lines();
     if lines.next().transpose()?.as_deref() != Some(&format!("auth {token}")) {
-        return writeln!(out, "error 认证失败");
+        return writeln!(out, "error {}", tr(T::AuthFailed));
     }
     for line in lines {
         let cmd = parse(&line?);
@@ -310,7 +311,7 @@ fn session(stream: TcpStream, token: &str, live: &Live, link: &Link) -> io::Resu
             Ok(Command::Status) => format!("ok\t{}", live.status(&(link.describe)())),
             Ok(Command::Quit) => {
                 writeln!(out, "ok")?;
-                log!("wisp: 用户退出");
+                log!("wisp: quit by the user");
                 // a clean exit: launchd (KeepAlive only on failure) leaves it stopped
                 std::process::exit(0);
             }

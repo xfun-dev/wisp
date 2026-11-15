@@ -2,6 +2,7 @@
 //! `key = value` file. Reading is lenient, so a hand edit never stops wisp from
 //! starting; changing a value through `set` is strict.
 
+use crate::i18n::{tr, trf, T};
 use std::ops::RangeInclusive;
 
 /// Which side of this screen the other screen sits on. There is no "below": a
@@ -49,7 +50,7 @@ impl Default for Settings {
 fn number(value: &str, range: &RangeInclusive<f64>, what: &str) -> Result<f64, String> {
     match value.parse::<f64>() {
         Ok(v) if range.contains(&v) => Ok(v),
-        _ => Err(format!("{what}要在 {} 到 {} 之间", range.start(), range.end())),
+        _ => Err(trf(T::SetRange, &[&what, range.start(), range.end()])),
     }
 }
 
@@ -57,10 +58,10 @@ impl Settings {
     /// Applies one change; unknown keys and out-of-range values are refused and leave it as it was.
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
         match key {
-            "edge" => self.edge = Edge::parse(value).ok_or("方向只能是 top、left、right")?,
-            "speed" => self.speed = number(value, &SPEED, "鼠标速度")?,
-            "scroll" => self.scroll = number(value, &SCROLL, "滚动速度")?,
-            _ => return Err(format!("没有这个设置：{key}")),
+            "edge" => self.edge = Edge::parse(value).ok_or(tr(T::SetEdge))?,
+            "speed" => self.speed = number(value, &SPEED, tr(T::MouseSpeed))?,
+            "scroll" => self.scroll = number(value, &SCROLL, tr(T::ScrollSpeed))?,
+            _ => return Err(trf(T::SetUnknown, &[&key])),
         }
         Ok(())
     }

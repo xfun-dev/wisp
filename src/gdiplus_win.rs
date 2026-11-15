@@ -335,6 +335,22 @@ impl Canvas {
         }
     }
 
+    /// Text that may wrap, each line centred, inside (x, y, w, h) from the top.
+    pub fn paragraph_centered(&self, s: &str, font: &Font, color: u32, x: f32, y: f32, w: f32, h: f32) {
+        let text = s.encode_utf16().collect::<Vec<u16>>();
+        let rect = RectF { x, y, w, h };
+        let mut format = ptr::null_mut();
+        let mut b = ptr::null_mut();
+        unsafe {
+            (api().GdipCreateStringFormat)(0, 0, &mut format);
+            (api().GdipSetStringFormatAlign)(format, Align::Center as i32);
+            (api().GdipCreateSolidFill)(color, &mut b);
+            (api().GdipDrawString)(self.g, text.as_ptr(), text.len() as i32, font.raw, &rect, format, b);
+            (api().GdipDeleteBrush)(b);
+            (api().GdipDeleteStringFormat)(format);
+        }
+    }
+
     /// Text that may wrap onto further lines inside (x, y, w, h), from the top.
     pub fn paragraph(&self, s: &str, font: &Font, color: u32, x: f32, y: f32, w: f32, h: f32) {
         let text = s.encode_utf16().collect::<Vec<u16>>();

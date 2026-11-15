@@ -39,7 +39,7 @@ fn answer(queue: &Queue, msg: Bridge) {
 }
 
 fn refuse(queue: &Queue, id: u32) {
-    answer(queue, Bridge::Done { id, code: -3, data: "开发者通道没有开启".as_bytes().to_vec() });
+    answer(queue, Bridge::Done { id, code: -3, data: b"the developer bridge is off".to_vec() });
 }
 
 /// Handles one bridge message from the Mac. Returns true when the open/closed state
@@ -49,7 +49,7 @@ pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
     match msg {
         Bridge::State { open } => {
             let was = OPEN.swap(open, Ordering::Relaxed);
-            log!("wisp: 开发者通道{}", if open { "已开启" } else { "已关闭" });
+            log!("wisp: developer bridge {}", if open { "on" } else { "off" });
             return was != open;
         }
         Bridge::Exec { id, .. } | Bridge::Put { id, .. } | Bridge::Get { id, .. } if !is_open() => refuse(queue, id),
@@ -65,7 +65,7 @@ pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
         Bridge::Put { id, offset, last, path, data } if path == UPDATE_PATH => {
             let written = (|| -> std::io::Result<()> {
                 if !crate::client_win::is_system() {
-                    return Err(std::io::Error::other("Windows 没有开启「锁屏和权限弹窗也能控制」"));
+                    return Err(std::io::Error::other("WispService is off on Windows (control the lock screen and UAC prompts)"));
                 }
                 let dir = crate::service_win::state_dir();
                 let tmp = dir.join("update.tmp");
@@ -78,7 +78,7 @@ pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
                 Ok(())
             })();
             match written {
-                Err(e) => answer(queue, Bridge::Done { id, code: -1, data: format!("更新失败：{e}").into_bytes() }),
+                Err(e) => answer(queue, Bridge::Done { id, code: -1, data: format!("update failed: {e}").into_bytes() }),
                 Ok(()) if last => answer(queue, Bridge::Done { id, code: 0, data: vec![] }),
                 Ok(()) => answer(queue, Bridge::Ack { id }),
             }
@@ -97,7 +97,7 @@ pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
                 f.write_all(&data)
             })();
             match written {
-                Err(e) => answer(queue, Bridge::Done { id, code: -1, data: format!("写入 {path} 失败：{e}").into_bytes() }),
+                Err(e) => answer(queue, Bridge::Done { id, code: -1, data: format!("writing {path} failed: {e}").into_bytes() }),
                 Ok(()) if last => answer(queue, Bridge::Done { id, code: 0, data: vec![] }),
                 // the Mac sends the next piece only after this (RULES.md X3)
                 Ok(()) => answer(queue, Bridge::Ack { id }),
@@ -110,7 +110,7 @@ pub fn handle(bytes: &[u8], queue: &Queue) -> bool {
             small_thread(move || {
                 let code = match send_file(&queue, id, &path, &acks) {
                     Ok(()) => (0, vec![]),
-                    Err(e) => (-1, format!("读取 {path} 失败：{e}").into_bytes()),
+                    Err(e) => (-1, format!("reading {path} failed: {e}").into_bytes()),
                 };
                 SENDING.lock().unwrap().as_mut().map(|m| m.remove(&id));
                 answer(&queue, Bridge::Done { id, code: code.0, data: code.1 });
@@ -138,7 +138,7 @@ fn send_file(queue: &Queue, id: u32, path: &str, acks: &mpsc::Receiver<()>) -> s
         sent += n as u64;
         let last = n == 0 || sent >= size;
         answer(queue, Bridge::Piece { id, last, data: buf[..n].to_vec() });
-        acks.recv_timeout(Duration::from_secs(30)).map_err(|_| std::io::Error::other("Mac 没有确认"))?;
+        acks.recv_timeout(Duration::from_secs(30)).map_err(|_| std::io::Error::other("the Mac did not acknowledge"))?;
         if last {
             return Ok(());
         }
@@ -191,7 +191,7 @@ fn start(cmd: &str) -> Result<(Running, Box<dyn Read + Send>), (i32, String)> {
         Err(e) => Err((-3, e.to_string())),
         Ok(Some(user)) => match crate::service_win::spawn_as_user(&user, cmd) {
             Ok((p, out)) => Ok((Running::User(p), Box::new(out))),
-            Err(e) => Err((-1, format!("启动失败：{e}"))),
+            Err(e) => Err((-1, format!("could not start: {e}"))),
         },
         Ok(None) => {
             let child = Command::new("cmd")
@@ -206,7 +206,7 @@ fn start(cmd: &str) -> Result<(Running, Box<dyn Read + Send>), (i32, String)> {
                     let out = c.stdout.take().unwrap();
                     Ok((Running::Own(c), Box::new(out)))
                 }
-                Err(e) => Err((-1, format!("启动失败：{e}"))),
+                Err(e) => Err((-1, format!("could not start: {e}"))),
             }
         }
     }
@@ -240,7 +240,7 @@ fn run(cmd: &str, timeout: u32) -> (i32, Vec<u8>) {
     };
     let mut bytes = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
     if code == -2 {
-        bytes.extend_from_slice(format!("\n（超过 {timeout} 秒，已停止）").as_bytes());
+        bytes.extend_from_slice(format!("\n(stopped after {timeout} seconds)").as_bytes());
     }
     (code, to_utf8(bytes))
 }

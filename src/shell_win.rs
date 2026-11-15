@@ -6,6 +6,7 @@
 //! - the tray icon (RULES.md U10, B1): the 一缕 glyph coloured by the connection state, the status
 //!   as its tooltip, a click for the status window, a right-click menu to quit.
 
+use crate::i18n::{tr, T};
 use crate::client_win::read_status;
 use crate::logic::icon::{mask, tinted};
 use crate::logic::status::{describe, Light};
@@ -197,7 +198,7 @@ fn tray_data(tray: &Tray) -> NotifyIconDataW {
     data.flags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.callback = WM_TRAY;
     data.icon = if view.light == Light::Green { tray.connected } else { tray.searching };
-    for (slot, unit) in data.tip.iter_mut().take(127).zip(format!("Wisp：{}", view.headline).encode_utf16()) {
+    for (slot, unit) in data.tip.iter_mut().take(127).zip(format!("Wisp: {}", view.headline).encode_utf16()) {
         *slot = unit;
     }
     data
@@ -242,12 +243,12 @@ pub(crate) fn switch_service(on: bool) {
 
 unsafe fn tray_menu(hwnd: Hwnd) {
     let menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, MENU_OPEN, wide("打开状态窗口").as_ptr());
+    AppendMenuW(menu, MF_STRING, MENU_OPEN, wide(tr(T::OpenWindow)).as_ptr());
     let service = crate::service_win::installed();
     let check = if service { MF_CHECKED } else { 0 };
-    AppendMenuW(menu, MF_STRING | check, MENU_SERVICE, wide("锁屏和权限弹窗也能控制").as_ptr());
+    AppendMenuW(menu, MF_STRING | check, MENU_SERVICE, wide(tr(T::LockSwitch)).as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-    AppendMenuW(menu, MF_STRING, MENU_QUIT, wide("退出 Wisp").as_ptr());
+    AppendMenuW(menu, MF_STRING, MENU_QUIT, wide(tr(T::Quit)).as_ptr());
     let mut p = Point::default();
     GetCursorPos(&mut p);
     // without this the menu would not close when clicking elsewhere
@@ -258,14 +259,14 @@ unsafe fn tray_menu(hwnd: Hwnd) {
     match chosen {
         MENU_OPEN => open_status(),
         MENU_SERVICE => switch_service(!service),
-        MENU_QUIT => quit("托盘"),
+        MENU_QUIT => quit("the tray"),
         _ => {}
     }
 }
 
 /// Quits the client, closing the status window too; only a crash leaves it up, saying so.
 unsafe fn quit(from: &str) -> ! {
-    log!("wisp: 用户从{from}退出");
+    log!("wisp: quit by the user from {from}");
 
     let window = status_window();
     if !window.is_null() {
@@ -289,7 +290,7 @@ unsafe extern "system" fn cloak_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam
 
 unsafe extern "system" fn tray_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
     if msg == WM_QUIT_WISP {
-        quit("状态窗口");
+        quit("the status window");
     }
     if msg == WM_TRAY {
         match lparam as u32 & 0xFFFF {

@@ -37,10 +37,23 @@ app=target/Wisp.app
 rm -rf $app && mkdir -p $app/Contents/MacOS $app/Contents/Resources $app/Contents/Helpers && cp ui/mac/Info.plist $app/Contents/
 # the app carries the core and installs it on launch (RULES.md I4)
 cp target/release/wisp $app/Contents/Helpers/wisp
-cp ui/mac/AppIcon.icns $app/Contents/Resources/
+cp ui/mac/AppIcon.icns $app/Contents/Resources/ && cp -R ui/mac/*.lproj $app/Contents/Resources/
 out=$(swiftc -O -parse-as-library -target arm64-apple-macos14 ui/mac/WispSettings.swift -o $app/Contents/MacOS/Wisp 2>&1) || { print -u2 "$out"; fail "build settings window"; }
 [[ -z $out ]] || { print -u2 "$out"; fail "warnings in settings window build"; }
 pass "build settings window, no warnings"
+# every word the window shows is in all five languages (RULES.md U14)
+missing=$(perl -CSD -e '
+  open my $s, "<:utf8", "ui/mac/WispSettings.swift"; my %k;
+  while (<$s>) { $k{$1} = 1 while /\bL\("((?:[^"\\]|\\.)*)"/g }
+  my @files = glob "ui/mac/*.lproj/Localizable.strings";
+  print "found ", scalar @files, " languages, not 5\n" unless @files == 5;
+  for my $f (@files) {
+    open my $h, "<:utf8", $f; my %have;
+    while (<$h>) { $have{$1} = 1 if /^"((?:[^"\\]|\\.)*)" = / }
+    for (sort keys %k) { print "$f: $_\n" unless $have{$_} }
+  }')
+[[ -z $missing ]] || { print -u2 -- "$missing"; fail "settings window words missing a translation"; }
+pass "settings window words in 5 languages"
 out=$(swiftc -O -parse-as-library -target arm64-apple-macos14 ui/mac/WispMenuBar.swift -o $app/Contents/Helpers/WispMenu 2>&1) || { print -u2 "$out"; fail "build menu bar icon"; }
 [[ -z $out ]] || { print -u2 "$out"; fail "warnings in menu bar icon build"; }
 pass "build menu bar icon, no warnings"

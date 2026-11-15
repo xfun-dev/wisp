@@ -9,6 +9,7 @@
 //! Nothing moves but the caret while a code is typed, so an open window costs no CPU.
 //! Light or dark follows the Windows app setting, title bar included.
 
+use crate::i18n::{tr, trf, Lang, T};
 use crate::client_win::RUNNING_MUTEX;
 use crate::gdiplus_win::{self as gp, rgb, rgba, Align, Canvas, Font, Path};
 use crate::logic::pairing::typed;
@@ -252,7 +253,7 @@ static PAIRED: Mutex<Option<Outcome>> = Mutex::new(None);
 enum Hit {
     /// the outlined button: pair, or start Wisp
     Go,
-    /// "换一台 Mac 配对" while connected
+    /// "Pair with Another Mac" while connected
     Relink,
     /// back out of re-pairing
     Cancel,
@@ -273,17 +274,25 @@ struct Fonts {
 }
 
 impl Fonts {
+    /// Each language in a face Windows ships that has its letters (GDI+ does not
+    /// fall back to another font on its own): Hangul is not in YaHei, for one.
     fn new() -> Fonts {
-        let yahei = "Microsoft YaHei UI";
+        let face = match crate::i18n::lang() {
+            Lang::ZhHans => "Microsoft YaHei UI",
+            Lang::ZhHant => "Microsoft JhengHei UI",
+            Lang::Ja => "Yu Gothic UI",
+            Lang::Ko => "Malgun Gothic",
+            Lang::En => "Segoe UI",
+        };
         Fonts {
-            label: Font::new(yahei, 12.0, false),
-            head: Font::new(yahei, 21.0, true),
-            body: Font::new(yahei, 12.0, false),
+            label: Font::new(face, 12.0, false),
+            head: Font::new(face, 21.0, true),
+            body: Font::new(face, 12.0, false),
             mono: Font::new("Consolas", 12.5, false),
-            button: Font::new(yahei, 13.0, true),
-            row: Font::new(yahei, 14.0, false),
-            digit: Font::new(yahei, 28.0, false),
-            drawing: Font::new(yahei, 12.0, true),
+            button: Font::new(face, 13.0, true),
+            row: Font::new(face, 14.0, false),
+            digit: Font::new(face, 28.0, false),
+            drawing: Font::new(face, 12.0, true),
         }
     }
 }
@@ -379,13 +388,12 @@ fn words(ui: &Ui) -> (String, String, String) {
     let v = &ui.view;
     match &v.tray {
         Tray::Connected { since, host } if !ui.repairing => {
-            let name = v.headline.strip_prefix("已连接 ").unwrap_or(&v.headline).to_string();
-            (format!("已连接 · {since}"), name, host.clone())
+            (trf(T::ConnectedFor, &[since]), v.who.clone(), host.clone())
         }
-        Tray::Connected { .. } => ("已连接".into(), "换一台 Mac".into(), "配对成功后，会替换现在这台 Mac".into()),
-        Tray::Pair { fresh: true, .. } => ("还没有配对".into(), "配对这台电脑".into(), "在 Mac 的 Wisp 里点“配对新电脑”，再输入它显示的数字".into()),
-        Tray::Pair { fresh: false, .. } => ("正在寻找".into(), "正在寻找 Mac".into(), v.detail.clone()),
-        Tray::Stopped => ("没有在运行".into(), "Wisp".into(), v.detail.clone()),
+        Tray::Connected { .. } => (tr(T::Connected).into(), tr(T::AnotherMac).into(), tr(T::Replaces).into()),
+        Tray::Pair { fresh: true, .. } => (tr(T::Unpaired).into(), tr(T::PairThisPc).into(), tr(T::PairHowTo).into()),
+        Tray::Pair { fresh: false, .. } => (tr(T::Searching).into(), tr(T::SearchingMac).into(), v.detail.clone()),
+        Tray::Stopped => (tr(T::Stopped).into(), "Wisp".into(), v.detail.clone()),
     }
 }
 
@@ -402,9 +410,9 @@ fn dot(ui: &Ui) -> u32 {
 
 fn button(ui: &Ui) -> Option<&'static str> {
     if ui.stopped() {
-        Some("启动 Wisp")
+        Some(tr(T::StartWisp))
     } else if ui.pairing() {
-        Some(if ui.busy { "配对中…" } else { "配对" })
+        Some(if ui.busy { tr(T::PairingNow) } else { tr(T::Pair) })
     } else {
         None
     }
@@ -413,9 +421,9 @@ fn button(ui: &Ui) -> Option<&'static str> {
 /// The footer's left link, if any, and its width.
 fn left_link(ui: &Ui) -> Option<(&'static str, Hit, f32)> {
     if ui.repairing {
-        Some(("取消", Hit::Cancel, 40.0))
+        Some((tr(T::Cancel), Hit::Cancel, 80.0))
     } else if ui.connected() {
-        Some(("换一台 Mac 配对", Hit::Relink, 110.0))
+        Some((tr(T::PairAnother), Hit::Relink, 200.0))
     } else {
         None
     }
@@ -435,7 +443,7 @@ fn hit_test(ui: &Ui, x: f32, y: f32) -> Option<Hit> {
             return Some(hit);
         }
     }
-    if inside((W - PAD - 70.0, FOOT + 8.0, 74.0, 28.0)) {
+    if inside((W - PAD - 120.0, FOOT + 8.0, 124.0, 28.0)) {
         return Some(Hit::Quit);
     }
     None
@@ -488,7 +496,7 @@ fn draw(c: &Canvas, ui: &Ui) {
 
     // the middle: the drawing, the code being typed, or why nothing works
     if ui.stopped() {
-        c.text("Wisp 的后台没有在运行，Mac 的键鼠不会过来", &ui.fonts.body, rgb(ink.soft), 0.0, MID, W, MID_H, Align::Center);
+        c.paragraph_centered(tr(T::BackendStopped), &ui.fonts.body, rgb(ink.soft), PAD + 12.0, MID + MID_H / 2.0 - 18.0, W - 2.0 * PAD - 24.0, 40.0);
     } else if ui.pairing() {
         draw_code(c, ui);
     } else {
@@ -498,9 +506,9 @@ fn draw(c: &Canvas, ui: &Ui) {
 
     // the lock-screen switch (RULES.md W1)
     let on = ui.service_shown();
-    c.text("锁屏和权限弹窗也能控制", &ui.fonts.row, rgb(ink.text), PAD, ROW + 16.0, 280.0, 22.0, Align::Left);
-    let note = if ui.service_asked.is_some() { "等待管理员同意…" } else { "开关时需要管理员同意一次" };
-    c.text(note, &ui.fonts.body, rgb(ink.soft), PAD, ROW + 40.0, 300.0, 20.0, Align::Left);
+    c.text(tr(T::LockSwitch), &ui.fonts.row, rgb(ink.text), PAD, ROW + 16.0, W - 2.0 * PAD - 52.0, 22.0, Align::Left);
+    let note = if ui.service_asked.is_some() { tr(T::WaitingAdmin) } else { tr(T::AdminOnce) };
+    c.text(note, &ui.fonts.body, rgb(ink.soft), PAD, ROW + 40.0, W - 2.0 * PAD - 52.0, 20.0, Align::Left);
     let (sx, sy, sw, sh) = SWITCH;
     let track = Path::round_rect(sx, sy, sw, sh, sh / 2.0);
     if on {
@@ -527,7 +535,7 @@ fn draw(c: &Canvas, ui: &Ui) {
     if let Some((s, hit, w)) = left_link(ui) {
         link(c, s, hit, PAD, w, Align::Left);
     }
-    link(c, "退出 Wisp", Hit::Quit, W - PAD - 70.0, 70.0, Align::Right);
+    link(c, tr(T::Quit), Hit::Quit, W - PAD - 120.0, 120.0, Align::Right);
 }
 
 /// This computer above the Mac, in one line each, with the wisp between them.
@@ -537,7 +545,7 @@ fn draw_desk(c: &Canvas, ui: &Ui) {
     let (mx, my, mw, mh) = (148.0, MID + 12.0, 104.0, 60.0);
     c.fill(&Path::round_rect(mx, my, mw, mh, 4.0), rgb(ink.sheet));
     c.stroke(&Path::round_rect(mx, my, mw, mh, 4.0), rgb(ink.text), 1.2);
-    c.text("这台电脑", &ui.fonts.drawing, rgb(ink.text), mx, my, mw, mh, Align::Center);
+    c.text(tr(T::ThisPc), &ui.fonts.drawing, rgb(ink.text), mx, my, mw, mh, Align::Center);
     let (lx, ly, lw, lh) = (161.0, MID + 92.0, 78.0, 44.0);
     c.fill(&Path::round_rect(lx, ly, lw, lh, 3.0), rgb(ink.sheet));
     c.stroke(&Path::round_rect(lx, ly, lw, lh, 3.0), rgb(ink.text), 1.2);
@@ -546,7 +554,7 @@ fn draw_desk(c: &Canvas, ui: &Ui) {
     c.stroke(&base, rgb(ink.text), 1.2);
     let smoke = Path::new().move_to(200.0, ly - 3.0).curve_to((193.0, ly - 10.0), (208.0, my + mh + 12.0), 200.0, my + mh + 4.0);
     c.stroke(&smoke, rgb(if live { ink.celadon } else { ink.ghost }), 1.6);
-    c.text("屏幕位置在 Mac 上设置", &ui.fonts.body, rgb(ink.faint), 0.0, MID + MID_H - 24.0, W, 20.0, Align::Center);
+    c.text(tr(T::SetOnMac), &ui.fonts.body, rgb(ink.faint), 0.0, MID + MID_H - 24.0, W, 20.0, Align::Center);
 }
 
 /// The Mac's code being typed: six figures over hairlines, the caret where the next goes.
@@ -554,10 +562,10 @@ fn draw_code(c: &Canvas, ui: &Ui) {
     let ink = ui.ink;
     let prompt = match &ui.view.tray {
         Tray::Pair { prompt, .. } => *prompt,
-        _ => "输入新 Mac 上显示的配对码",
+        _ => tr(T::EnterNewCode),
     };
     let (said, color) = match (&ui.outcome, ui.busy) {
-        (_, true) => ("正在和 Mac 核对配对码", ink.soft),
+        (_, true) => (tr(T::Checking), ink.soft),
         (Some((said, ok)), false) => (said.as_str(), if *ok { ink.celadon } else { ink.rust }),
         (None, false) => (prompt, ink.soft),
     };
@@ -575,7 +583,7 @@ fn draw_code(c: &Canvas, ui: &Ui) {
         let x = slot_x(digits.len()) + 14.0;
         c.fill(&Path::poly(&[(x, SLOT_Y + 10.0), (x + 1.5, SLOT_Y + 10.0), (x + 1.5, SLOT_Y + 38.0), (x, SLOT_Y + 38.0)]), rgb(ink.text));
     }
-    c.text("用键盘输入数字，回车确认", &ui.fonts.body, rgb(ink.faint), 0.0, MID + MID_H - 30.0, W, 20.0, Align::Center);
+    c.text(tr(T::TypeDigits), &ui.fonts.body, rgb(ink.faint), 0.0, MID + MID_H - 30.0, W, 20.0, Align::Center);
 }
 
 fn caret_rect(scale: f32) -> Rect {
@@ -633,7 +641,7 @@ unsafe fn start_pairing(hwnd: Hwnd) {
     let window = hwnd as usize;
     std::thread::spawn(move || {
         let outcome = match crate::client_win::pair(&code, crate::proto::DEFAULT_PORT) {
-            Ok(name) => (format!("已与 {name} 配对，正在连接…"), true),
+            Ok(name) => (trf(T::PairedConnecting, &[&name]), true),
             Err(e) => (e.to_string(), false),
         };
         *PAIRED.lock().unwrap() = Some(outcome);
@@ -641,7 +649,7 @@ unsafe fn start_pairing(hwnd: Hwnd) {
     });
 }
 
-/// Quitting from here does what the tray's "退出 Wisp" does: the client exits and closes this window.
+/// Quitting from here does what the tray's "Quit Wisp" does: the client exits and closes this window.
 unsafe fn quit(hwnd: Hwnd) {
     let tray = FindWindowW(wide("WispTray").as_ptr(), ptr::null());
     if !tray.is_null() {
@@ -852,7 +860,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
                         ui.caret_on = true;
                     }
                     '\r' if ui.code.len() == 6 => go = true,
-                    '\r' => ui.outcome = Some(("配对码是 6 位数字".into(), false)),
+                    '\r' => ui.outcome = Some((tr(T::CodeSix).into(), false)),
                     '\u{1b}' => cancel = ui.repairing,
                     _ => {}
                 }

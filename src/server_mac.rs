@@ -263,19 +263,19 @@ pub struct Options {
 }
 
 pub fn run(opts: Options) -> io::Result<()> {
-    let step = |what: &str| log!("wisp: 启动 +{}ms：{what}", since_start());
-    step("开始");
+    let step = |what: &str| log!("wisp: start +{}ms: {what}", since_start());
+    step("begin");
     let link: Arc<Mutex<Option<Link>>> = Arc::new(Mutex::new(None));
     let clipboard = pasteboard::spawn();
 
     // everything that might block comes first, while no tap exists yet (RULES.md S1)
     let listener = TcpListener::bind(("0.0.0.0", opts.port))?;
-    log!("wisp: 等待客户端连接，端口 {}", opts.port);
+    log!("wisp: waiting for the client on port {}", opts.port);
     let name = computer_name();
-    log!("wisp: 本机名称：{name}");
+    log!("wisp: this computer is {name}");
     match opts.live.paired() {
-        Some(p) => log!("wisp: 已与 {} 配对", p.name),
-        None => log!("wisp: 还没有配对：在 Wisp 设置里点“配对新电脑”"),
+        Some(p) => log!("wisp: paired with {}", p.name),
+        None => log!("wisp: not paired yet: click Pair New Computer in Wisp"),
     }
     match UdpSocket::bind(("0.0.0.0", opts.port)) {
         Ok(socket) => {
@@ -288,7 +288,7 @@ pub fn run(opts: Options) -> io::Result<()> {
                 })
             });
         }
-        Err(e) => log!("wisp: 局域网自动发现不可用（客户端需用 --server 指定地址）：{e}"),
+        Err(e) => log!("wisp: LAN discovery unavailable (the client needs --server): {e}"),
     }
     match (TcpListener::bind((Ipv4Addr::LOCALHOST, control::PORT)), control::ensure_token(&crate::data_dir())) {
         (Ok(local), Ok(token)) => {
@@ -307,7 +307,7 @@ pub fn run(opts: Options) -> io::Result<()> {
             let live = opts.live.clone();
             std::thread::spawn(move || control::serve(local, token, live, hooks));
         }
-        (Err(e), _) | (_, Err(e)) => log!("wisp: 设置端口不可用（设置窗口无法连接）：{e}"),
+        (Err(e), _) | (_, Err(e)) => log!("wisp: control port unavailable (the settings window cannot connect): {e}"),
     }
     #[cfg(feature = "bridge")]
     {
@@ -329,7 +329,7 @@ pub fn run(opts: Options) -> io::Result<()> {
         let cid = _CGSDefaultConnection();
         CGSSetConnectionProperty(cid, cid, key, kCFBooleanTrue);
     }
-    step("网络与设置端口就绪");
+    step("network and control port ready");
 
     let display = unsafe { CGMainDisplayID() };
     let tap = Box::into_raw(Box::new(Tap {
@@ -368,17 +368,17 @@ pub fn run(opts: Options) -> io::Result<()> {
     let mut grab = create_grab();
     if grab.is_null() {
         prompt_accessibility();
-        log!("wisp: 需要「辅助功能」权限，请在 系统设置 → 隐私与安全性 → 辅助功能 中打开 wisp，授权后会自动继续");
+        log!("wisp: needs Accessibility access: allow wisp in System Settings → Privacy & Security → Accessibility; it carries on once allowed");
         // keep waiting instead of exiting, so launchd does not respawn us and re-prompt every few seconds
         while grab.is_null() {
             std::thread::sleep(Duration::from_secs(2));
             grab = create_grab();
         }
-        log!("wisp: 已获得辅助功能权限");
+        log!("wisp: Accessibility access granted");
     }
     let watch = unsafe { CGEventTapCreate(HID, HEAD, LISTEN_ONLY, 1 << MOUSE_MOVED, on_watch, tap as *mut c_void) };
     if watch.is_null() {
-        return Err(io::Error::other("无法创建旁听拦截"));
+        return Err(io::Error::other("could not create the listen-only event tap"));
     }
     unsafe {
         (*tap).grab = grab;
@@ -386,7 +386,7 @@ pub fn run(opts: Options) -> io::Result<()> {
     }
     GRAB.store(grab, Ordering::SeqCst);
     DISPLAY.store(display, Ordering::SeqCst);
-    step("拦截已创建（控制权拦截关闭中）");
+    step("event taps created (the grabbing one off)");
 
     unsafe {
         let rl = CFRunLoopGetCurrent();
@@ -409,7 +409,7 @@ pub fn run(opts: Options) -> io::Result<()> {
     LAST_BEAT.store(since_start(), Ordering::SeqCst);
     let _ = WATCHDOG.set(std::thread::spawn(watchdog).thread().clone());
     unsafe { CGEventTapEnable(watch, true) };
-    step("进入事件循环");
+    step("entering the run loop");
     unsafe { CFRunLoopRun() };
     Ok(())
 }
@@ -439,7 +439,7 @@ fn watchdog() {
             CGAssociateMouseAndMouseCursorPosition(1);
             show_cursor(DISPLAY.load(Ordering::SeqCst));
         }
-        log!("wisp: 异常：主线程 {silent}ms 没有响应，看门狗已关闭拦截并把键鼠还给 Mac");
+        log!("wisp: problem: the main thread was silent for {silent}ms; the watchdog switched the grab off and gave input back to the Mac");
         // the main thread may have put the heartbeat to sleep between REMOTE and RESCUED:
         // make sure it beats again to finish the hand-back
         wake_beat();
@@ -456,7 +456,7 @@ extern "C" fn on_beat(_timer: *mut c_void, info: *mut c_void) {
     // locked, or secure input, while Windows has control: back to the Mac (RULES.md L10)
     if REMOTE.load(Ordering::SeqCst) && tap.active.is_some() {
         if let Some(pid) = secure_input() {
-            log!("wisp: Mac 已锁屏或有程序开启了安全输入（{}），键盘无法转发，光标回到 Mac", process_name(pid));
+            log!("wisp: the Mac is locked or Secure Event Input is on ({}); keys cannot be forwarded, cursor back on the Mac", process_name(pid));
             tap.secure_noted = true;
             let at = tap.frozen;
             tap.go_local(Some(at));
@@ -464,7 +464,7 @@ extern "C" fn on_beat(_timer: *mut c_void, info: *mut c_void) {
     }
     let stall = STALL_MS.swap(0, Ordering::Relaxed);
     if stall > 0 {
-        log!("wisp: 测试：主线程暂停 {stall}ms");
+        log!("wisp: test: main thread stalls {stall}ms");
         std::thread::sleep(Duration::from_millis(stall));
     }
     if !REMOTE.load(Ordering::SeqCst) && !RESCUED.load(Ordering::SeqCst) && STALL_MS.load(Ordering::Relaxed) == 0 {
@@ -610,7 +610,7 @@ impl Tap {
         self.keep_frozen(ty, ev);
         let id = self.active.as_ref().map_or(0, |a| a.id);
         if current(&mut self.link.lock().unwrap(), id).is_none() {
-            log!("wisp: 客户端已断开，控制权回到 Mac");
+            log!("wisp: the client dropped; control back on the Mac");
             self.go_local(None);
             return;
         }
@@ -636,7 +636,7 @@ impl Tap {
             if !self.thaw_reported {
                 self.thaw_reported = true;
                 log!(
-                    "wisp: 异常：控制 Windows 期间 Mac 光标在移动（冻结于 {:.0},{:.0}，现在 {:.0},{:.0}，事件类型 {ty}），重新冻结",
+                    "wisp: problem: the Mac cursor moved while Windows had control (frozen at {:.0},{:.0}, now {:.0},{:.0}, event type {ty}); frozen again",
                     self.frozen.x, self.frozen.y, p.x, p.y
                 );
             }
@@ -646,7 +646,7 @@ impl Tap {
         if now >= self.next_visibility_check {
             self.next_visibility_check = now + VISIBILITY_EVERY_MS;
             if unsafe { CGCursorIsVisible() } != 0 {
-                log!("wisp: Mac 指针被系统重新显示（例如亮屏后），重新冻结并隐藏");
+                log!("wisp: macOS showed the Mac cursor again (e.g. display wake); frozen and hidden again");
                 unsafe { CGAssociateMouseAndMouseCursorPosition(0) };
                 hide_cursor(self.display);
                 self.frozen = p;
@@ -673,7 +673,7 @@ impl Tap {
         if let Some(pid) = secure_input() {
             if !self.secure_noted {
                 self.secure_noted = true;
-                log!("wisp: Mac 已锁屏或有程序开启了安全输入（{}），键盘无法转发，暂不切到 Windows", process_name(pid));
+                log!("wisp: the Mac is locked or Secure Event Input is on ({}); keys cannot be forwarded, staying on the Mac", process_name(pid));
             }
             self.switcher.reset();
             return;
@@ -701,7 +701,7 @@ impl Tap {
         self.thaw_reported = false;
         self.entered_at = since_start();
         self.next_visibility_check = self.entered_at + VISIBILITY_EVERY_MS;
-        log!("wisp: 光标进入 Windows（方向 {}，从 Mac {:.0},{:.0}）", self.live.settings().edge.name(), p.x, p.y);
+        log!("wisp: cursor over to Windows (edge {}, from Mac {:.0},{:.0})", self.live.settings().edge.name(), p.x, p.y);
         self.active = Some(link);
     }
 
@@ -716,9 +716,9 @@ impl Tap {
         self.switcher.reset();
         let Some(link) = self.active.take() else { return };
         match at {
-            Some(p) => log!("wisp: 光标回到 Mac（{:.0},{:.0}）", p.x, p.y),
-            None if thaw => log!("wisp: 控制权收回 Mac（连接断开或发送失败）"),
-            None => log!("wisp: 控制权收回 Mac（看门狗恢复后）"),
+            Some(p) => log!("wisp: cursor back on the Mac ({:.0},{:.0})", p.x, p.y),
+            None if thaw => log!("wisp: control back on the Mac (link dropped or a send failed)"),
+            None => log!("wisp: control back on the Mac (after a watchdog rescue)"),
         }
         let _ = link.tx.try_send(Msg::Leave);
         let ours = thaw && REMOTE.swap(false, Ordering::SeqCst);
@@ -809,7 +809,7 @@ impl Tap {
                     Some(_) => Ok(()),
                     None => {
                         if ty == KEY_DOWN && field(ev, AUTOREPEAT) == 0 {
-                            log!("wisp: 没有对应的按键，未转发（keycode {kc:#x}）");
+                            log!("wisp: no matching key, not forwarded (keycode {kc:#x})");
                         }
                         Ok(())
                     }
@@ -888,27 +888,27 @@ fn accept_loop(
     for (id, stream) in (1u64..).zip(listener.incoming().flatten()) {
         let (link, clipboard, name, live) = (link.clone(), clipboard.clone(), name.clone(), live.clone());
         std::thread::spawn(move || {
-            let peer = stream.peer_addr().map_or_else(|_| "未知地址".to_string(), |a| a.to_string());
+            let peer = stream.peer_addr().map_or_else(|_| "unknown address".to_string(), |a| a.to_string());
             if peek_magic(&stream).is_ok_and(|m| &m == pair::MAGIC) {
                 match pair::host(stream, &live.pairing, &name, control::now()) {
                     Ok(p) => {
-                        log!("wisp: 已与 {} 配对（{peer}）", p.name);
+                        log!("wisp: paired with {} ({peer})", p.name);
                         if let Err(e) = live.set_paired(Some(p)) {
-                            log!("wisp: 保存配对失败：{e}");
+                            log!("wisp: saving the pairing failed: {e}");
                         }
                         drop_link(&link);
                     }
-                    Err(e) => log!("wisp: {peer} 配对失败：{e}"),
+                    Err(e) => log!("wisp: {peer} pairing failed: {e}"),
                 }
                 return;
             }
             let Some(paired) = live.paired() else {
-                log!("wisp: 还没有配对，不接受 {peer} 的连接");
+                log!("wisp: not paired; refusing {peer}");
                 return;
             };
             let (wall, awake) = (control::now(), Instant::now());
             let Err(e) = serve_client(stream, &peer, &link, &clipboard, &name, paired.key, id);
-            log!("wisp: {peer} 断开：{e}");
+            log!("wisp: {peer} dropped: {e}");
             let mut l = link.lock().unwrap();
             if current(&mut l, id).is_some() {
                 *l = None;
@@ -940,7 +940,7 @@ fn serve_client(
     let Msg::Info { w, h } = rx.recv()? else {
         return Err(io::Error::other("expected screen info"));
     };
-    log!("wisp: {peer} 已连接，屏幕 {w}×{h}");
+    log!("wisp: {peer} connected, screen {w}×{h}");
     let tx = tx.spawn();
     let _ = tx.send(Msg::Name(name.to_string()));
     *link.lock().unwrap() = Some(Link { id, peer: peer.to_string(), tx, w: w as f64, h: h as f64, closer });

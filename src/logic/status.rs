@@ -2,6 +2,7 @@
 //! `key=value` lines in a file the client rewrites whenever its state changes,
 //! and the words the window shows for them.
 
+use crate::i18n::{tr, trf, T};
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
     pub connected: bool,
@@ -74,7 +75,9 @@ pub struct View {
     pub headline: String,
     pub detail: String,
     pub tray: Tray,
-    /// "开发者通道已开启" while the Mac has the bridge open (RULES.md X5)
+    /// the Mac's name, "Mac" until it has said it
+    pub who: String,
+    /// "Developer bridge is on" while the Mac has the bridge open (RULES.md X5)
     pub bridge: Option<String>,
 }
 
@@ -86,14 +89,14 @@ fn bridge_line(_: &Status) -> Option<String> {
 
 #[cfg(any(test, feature = "bridge"))]
 fn bridge_line(s: &Status) -> Option<String> {
-    (s.connected && s.bridge).then(|| "开发者通道已开启".to_string())
+    (s.connected && s.bridge).then(|| tr(T::BridgeOn).to_string())
 }
 
 fn duration(secs: u64) -> String {
     match secs {
-        0..=59 => "不到 1 分钟".into(),
-        60..=3599 => format!("{} 分钟", secs / 60),
-        _ => format!("{} 小时 {} 分钟", secs / 3600, secs % 3600 / 60),
+        0..=59 => tr(T::UnderMinute).into(),
+        60..=3599 => trf(T::Minutes, &[&(secs / 60)]),
+        _ => trf(T::HoursMinutes, &[&(secs / 3600), &(secs % 3600 / 60)]),
     }
 }
 
@@ -102,38 +105,42 @@ pub fn describe(file: Option<&str>, running: bool, now: u64) -> View {
     if !running {
         return View {
             light: Light::Red,
-            headline: "Wisp 没有在运行".into(),
-            detail: "登录 Windows 时它会自动启动".into(),
+            headline: tr(T::WispStopped).into(),
+            detail: tr(T::StartsAtSignIn).into(),
             tray: Tray::Stopped,
+            who: "Mac".into(),
             bridge: None,
         };
     }
     let s = file.map(Status::parse).unwrap_or_default();
     if s.connected {
         let host = s.peer.split(':').next().unwrap_or_default().to_string();
-        let headline = if s.name.is_empty() { "已连接 Mac".to_string() } else { format!("已连接 {}", s.name) };
+        let who = if s.name.is_empty() { "Mac".to_string() } else { s.name.clone() };
         View {
             light: Light::Green,
-            headline,
-            detail: "Mac 的光标越过屏幕边缘，就会来到这里".into(),
+            headline: trf(T::ConnectedTo, &[&who]),
+            detail: tr(T::CursorComes).into(),
             tray: Tray::Connected { since: duration(now.saturating_sub(s.since)), host },
+            who,
             bridge: bridge_line(&s),
         }
     } else if s.unpaired {
         View {
             light: Light::Orange,
-            headline: "还没有配对".into(),
-            detail: "在 Mac 的 Wisp 里点“配对新电脑”".into(),
-            tray: Tray::Pair { prompt: "输入 Mac 上显示的配对码", fresh: true },
+            headline: tr(T::NotPairedYet).into(),
+            detail: tr(T::ClickPairOnMac).into(),
+            tray: Tray::Pair { prompt: tr(T::EnterMacCode), fresh: true },
+            who: "Mac".into(),
             bridge: None,
         }
     } else {
-        let detail = if s.problem.is_empty() { "正在局域网里寻找 Mac".to_string() } else { s.problem };
+        let detail = if s.problem.is_empty() { tr(T::SearchingLan).to_string() } else { s.problem };
         View {
             light: Light::Orange,
-            headline: "正在寻找 Mac…".into(),
+            headline: tr(T::SearchingNow).into(),
             detail,
-            tray: Tray::Pair { prompt: "要重新配对？输入 Mac 上的配对码", fresh: false },
+            tray: Tray::Pair { prompt: tr(T::RepairPrompt), fresh: false },
+            who: "Mac".into(),
             bridge: None,
         }
     }

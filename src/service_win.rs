@@ -8,6 +8,7 @@
 //! everything the user sees or asks for (the status window, bridge commands) runs as
 //! the user.
 
+use crate::i18n::{tr, T};
 use crate::win32::wide;
 use std::ffi::c_void;
 use std::io;
@@ -263,7 +264,7 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
 /// over by the unelevated caller, becomes the SYSTEM client's (W2).
 pub fn set_pair(hex: &str) -> io::Result<()> {
     let text = from_hex(hex).and_then(|b| String::from_utf8(b).ok()).filter(|t| crate::logic::pairing::Paired::parse(t).is_some());
-    let text = text.ok_or_else(|| io::Error::other("配对信息无效"))?;
+    let text = text.ok_or_else(|| io::Error::other(tr(T::BadPairInfo)))?;
     let dir = secret_dir()?;
     let tmp = dir.join("pair.tmp");
     std::fs::write(&tmp, text)?;
@@ -296,7 +297,7 @@ pub fn install(pair: &str) -> io::Result<()> {
     unsafe {
         let scm = OpenSCManagerW(ptr::null(), ptr::null(), SC_MANAGER_ALL_ACCESS);
         if scm.is_null() {
-            return Err(io::Error::other("需要管理员权限"));
+            return Err(io::Error::other(tr(T::NeedAdmin)));
         }
         let mut svc = OpenServiceW(scm, wide(NAME).as_ptr(), SERVICE_ALL_ACCESS);
         if !svc.is_null() {
@@ -351,7 +352,7 @@ pub fn uninstall() -> io::Result<()> {
     unsafe {
         let scm = OpenSCManagerW(ptr::null(), ptr::null(), SC_MANAGER_ALL_ACCESS);
         if scm.is_null() {
-            return Err(io::Error::other("需要管理员权限"));
+            return Err(io::Error::other(tr(T::NeedAdmin)));
         }
         let svc = OpenServiceW(scm, wide(NAME).as_ptr(), SERVICE_ALL_ACCESS);
         if !svc.is_null() {
@@ -480,7 +481,7 @@ fn copy_retrying(from: &std::path::Path, to: &std::path::Path) -> io::Result<()>
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Err(last.unwrap_or_else(|| io::Error::other("复制失败")))
+    Err(last.unwrap_or_else(|| io::Error::other(tr(T::CopyFailed))))
 }
 
 /// Runs `wisp.exe <params>` as administrator (one UAC prompt) and waits for it.
@@ -499,14 +500,14 @@ pub fn elevated(params: &str) -> io::Result<()> {
     };
     unsafe {
         if ShellExecuteExW(&mut info) == 0 || info.process.is_null() {
-            return Err(io::Error::other("没有得到管理员授权"));
+            return Err(io::Error::other(tr(T::NoAdmin)));
         }
         WaitForSingleObject(info.process, INFINITE);
         let mut code = 1;
         GetExitCodeProcess(info.process, &mut code);
         CloseHandle(info.process);
         if code != 0 {
-            return Err(io::Error::other("设置没有完成"));
+            return Err(io::Error::other(tr(T::SetupUnfinished)));
         }
     }
     Ok(())
@@ -578,7 +579,7 @@ unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
         if next.exists() {
             end(&mut child);
             let ok = service::put_in_place(&next, &bin.join(service::CLIENT_EXE), &bin.join(service::OLD_EXE));
-            log_line(if ok { "已换上新版本" } else { "新版本没能换上，继续用旧版本" });
+            log_line(if ok { "switched to the new version" } else { "the new version could not be put in place; keeping the old one" });
         }
         let session = WTSGetActiveConsoleSessionId();
         let now = child.map(|(h, s)| {
@@ -601,7 +602,7 @@ unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
         if step.start {
             child = launch(session, &bin, &state).map(|h| (h, session));
             if child.is_none() {
-                log_line("客户端没能启动");
+                log_line("the client could not be started");
             }
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -680,13 +681,13 @@ pub fn run_as_user(exe: &std::path::Path, args: &str) -> io::Result<()> {
     if !crate::client_win::is_system() {
         return std::process::Command::new(exe).args(args.split_whitespace()).spawn().map(|_| ());
     }
-    let token = user_token().ok_or_else(|| io::Error::other("没有用户登录"))?;
+    let token = user_token().ok_or_else(|| io::Error::other(tr(T::NoUser)))?;
     unsafe {
         let mut env = ptr::null_mut();
         // without the user's own environment it would get SYSTEM's: refuse instead
         if create_env_block(&mut env, token, 0) == 0 {
             CloseHandle(token);
-            return Err(io::Error::other("无法取得用户的环境"));
+            return Err(io::Error::other(tr(T::NoUserEnv)));
         }
         let mut desktop = wide("winsta0\\default");
         let mut cmd = wide(&format!("\"{}\" {args}", exe.display()));
@@ -714,7 +715,7 @@ pub fn as_user<T>(f: impl FnOnce() -> T) -> io::Result<T> {
     if !crate::client_win::is_system() {
         return Ok(f());
     }
-    let token = user_token().ok_or_else(|| io::Error::other("没有用户登录，开发者通道不可用"))?;
+    let token = user_token().ok_or_else(|| io::Error::other("nobody is signed in; the developer bridge is unavailable"))?;
     unsafe {
         if ImpersonateLoggedOnUser(token) == 0 {
             CloseHandle(token);
@@ -740,11 +741,11 @@ impl UserLaunch {
         if !crate::client_win::is_system() {
             return Ok(None);
         }
-        let token = user_token().ok_or_else(|| io::Error::other("没有用户登录，开发者通道不可用"))?;
+        let token = user_token().ok_or_else(|| io::Error::other("nobody is signed in; the developer bridge is unavailable"))?;
         let mut env = ptr::null_mut();
         if unsafe { create_env_block(&mut env, token, 0) } == 0 {
             unsafe { CloseHandle(token) };
-            return Err(io::Error::other("无法取得用户的环境"));
+            return Err(io::Error::other(tr(T::NoUserEnv)));
         }
         Ok(Some(UserLaunch { token, env }))
     }

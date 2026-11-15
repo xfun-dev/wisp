@@ -1,11 +1,15 @@
 #!/bin/zsh
 # Renders the Mac settings window in each state, light and dark, to PNG files, from
-# fixed status lines: nothing runs, nothing is sent (RULES.md B4).
-# usage: scripts/ui-states.sh [out-dir]   (default: target/ui-states)
+# fixed status lines: nothing runs, nothing is sent (RULES.md B4). With languages
+# after the directory, each of them too (RULES.md U14): en zh-Hans zh-Hant ja ko.
+# usage: scripts/ui-states.sh [out-dir [language...]]   (default: target/ui-states, the system's)
 set -euo pipefail
 cd "${0:A:h}/.."
 out=${1:-target/ui-states}
+langs=(${@:2})
 mkdir -p $out target/ui-harness
+# the window's words sit beside the renderer, where Bundle.main finds them
+cp -R ui/mac/*.lproj target/ui-harness/
 # the window's source without its @main, plus a small renderer
 sed 's/^@main$//' ui/mac/WispSettings.swift > target/ui-harness/Settings.swift
 cat > target/ui-harness/Render.swift <<'EOF'
@@ -42,5 +46,9 @@ struct Render {
 }
 EOF
 swiftc -O -parse-as-library -target $(uname -m)-apple-macos14 target/ui-harness/Settings.swift target/ui-harness/Render.swift -o target/ui-harness/render
-target/ui-harness/render $out
-ls $out
+if (( ${#langs} )); then
+  for l in $langs; do mkdir -p $out/$l && target/ui-harness/render $out/$l -AppleLanguages "($l)"; done
+else
+  target/ui-harness/render $out
+fi
+ls -R $out | head -40

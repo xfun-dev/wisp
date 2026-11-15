@@ -1,6 +1,7 @@
 //! Windows side: connects to the server and replays what it receives through
 //! SendInput, so Windows sees it exactly like a locally attached mouse and keyboard.
 
+use crate::i18n::{tr, trf, T};
 use crate::clipboard_win::Clipboard;
 use crate::shell_win::Shell;
 use crate::discovery;
@@ -92,7 +93,7 @@ pub fn pair(code: &str, port: u16) -> io::Result<String> {
     std::fs::write(&tmp, paired.to_text()).and_then(|_| std::fs::rename(&tmp, pair_file()))?;
     // WispService's client keeps its own copy, which only an administrator may change (W2)
     if crate::service_win::installed() {
-        crate::service_win::sync_pair().map_err(|e| io::Error::other(format!("已配对，但锁屏和权限弹窗下要用新配对需要管理员授权（{e}）")))?;
+        crate::service_win::sync_pair().map_err(|e| io::Error::other(trf(T::PairedNeedsAdmin, &[&e])))?;
     }
     Ok(paired.name)
 }
@@ -247,7 +248,7 @@ impl Injector {
 pub fn run(server: Option<&str>, port: u16, system: bool) -> io::Result<()> {
     SYSTEM.store(system, std::sync::atomic::Ordering::Relaxed);
     if system {
-        log!("wisp: 以系统身份运行（WispService），可以控制锁屏和权限弹窗");
+        log!("wisp: running as SYSTEM (WispService): the lock screen and UAC prompts are reachable");
     }
     unsafe { SetProcessDPIAware() };
     let name: Vec<u16> = RUNNING_MUTEX.encode_utf16().chain(Some(0)).collect();
@@ -267,7 +268,7 @@ pub fn run(server: Option<&str>, port: u16, system: bool) -> io::Result<()> {
     loop {
         // re-read every round: pairing (or re-pairing) happens in another process
         let Some(p) = paired() else {
-            let e = "还没有配对：在 Mac 的 Wisp 里点“配对新电脑”，再在这里输入配对码".to_string();
+            let e = tr(T::NotPaired).to_string();
             if e != last_err {
                 log!("wisp: {e}");
                 report(&shell, Status { since: now(), problem: e.clone(), unpaired: true, ..Status::default() });
@@ -289,7 +290,7 @@ pub fn run(server: Option<&str>, port: u16, system: bool) -> io::Result<()> {
         // while the Mac is away this repeats every 2 s; log each distinct reason once
         let e = e.to_string();
         if e != last_err {
-            log!("wisp: 连接失败：{e}（每 2 秒重试）");
+            log!("wisp: connection failed: {e} (retrying every 2 s)");
             report(&shell, Status { since: now(), problem: e.clone(), ..Status::default() });
             last_err = e;
         }
@@ -316,7 +317,7 @@ impl Finder<'_> {
             let addr = (server, self.port)
                 .to_socket_addrs()?
                 .next()
-                .ok_or_else(|| io::Error::other("无法解析服务器地址"))?;
+                .ok_or_else(|| io::Error::other(tr(T::CantResolve)))?;
             return TcpStream::connect_timeout(&addr, timeout);
         }
         if let Some(addr) = self.known {
@@ -326,7 +327,7 @@ impl Finder<'_> {
         }
         let addr = discovery::find(&self.psk, &discovery::broadcast_targets(self.port), Duration::from_secs(1))?;
         if self.known != Some(addr) {
-            log!("wisp: 在局域网找到 Mac：{addr}");
+            log!("wisp: found the Mac on the LAN: {addr}");
             self.known = Some(addr);
         }
         TcpStream::connect_timeout(&addr, timeout)
@@ -346,8 +347,8 @@ fn session(
     let queue = tx.spawn();
     queue
         .send(Msg::Info { w: inj.w as u16, h: inj.h as u16 })
-        .map_err(|_| io::Error::other("连接在握手后立即断开"))?;
-    log!("wisp: 已连接 {addr}，本机屏幕 {}×{}", inj.w, inj.h);
+        .map_err(|_| io::Error::other(tr(T::HandshakeDropped)))?;
+    log!("wisp: connected to {addr}, this screen {}×{}", inj.w, inj.h);
     let mut status = Status { connected: true, peer: addr.to_string(), since: now(), ..Status::default() };
     #[cfg(feature = "bridge")]
     crate::bridge_win::reset();
@@ -356,7 +357,7 @@ fn session(
     Err(rx.run(|msg| match msg {
         Msg::Clipboard(text) => clipboard.pull(&text),
         Msg::Name(name) => {
-            log!("wisp: 对方是 {name}");
+            log!("wisp: the Mac is {name}");
             status.name = name;
             report(shell, status.clone());
         }

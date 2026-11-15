@@ -7,6 +7,8 @@
 //!   C: "WSPP" ver name spake_b      S: status [name spake_a]
 //!   C: confirm_client               S: status [confirm_server | tries_left]
 
+#[cfg(any(test, windows))]
+use crate::i18n::{tr, trf, T};
 use crate::logic::pairing::Paired;
 #[cfg(any(test, target_os = "macos"))]
 use crate::logic::pairing::Window;
@@ -128,26 +130,26 @@ pub fn join(mut stream: TcpStream, code: &str, pc: &str) -> io::Result<Paired> {
     stream.write_all(&hello)?;
 
     if read_array::<1>(&mut stream)?[0] != OK {
-        return Err(failed("Mac 上的配对码已失效，请在 Mac 上重新生成"));
+        return Err(failed(tr(T::CodeExpired)));
     }
     let mac = read_name(&mut stream)?;
     let msg_a = read_array::<SPAKE_LEN>(&mut stream)?;
-    let secret = spake.finish(&msg_a).map_err(|_| failed("配对消息有误，请重试"))?;
+    let secret = spake.finish(&msg_a).map_err(|_| failed(tr(T::PairBadMessage)))?;
     stream.write_all(&derive(&secret, b"confirm-client", &mac, pc))?;
 
     match read_array::<1>(&mut stream)?[0] {
         OK => {
             let confirm = read_array::<32>(&mut stream)?;
             if !same(&confirm, &derive(&secret, b"confirm-server", &mac, pc)) {
-                return Err(failed("对方没能证明自己知道配对码，已停止配对"));
+                return Err(failed(tr(T::PairNoProof)));
             }
             Ok(Paired { name: mac.clone(), key: derive(&secret, b"key", &mac, pc) })
         }
         WRONG => Err(failed(&match read_array::<1>(&mut stream)?[0] {
-            0 => "配对码不对，已失效，请在 Mac 上重新生成".to_string(),
-            n => format!("配对码不对，还可以再试 {n} 次"),
+            0 => tr(T::CodeWrongDead).to_string(),
+            n => trf(T::CodeWrongTries, &[&n]),
         })),
-        _ => Err(failed("Mac 上的配对码已失效，请在 Mac 上重新生成")),
+        _ => Err(failed(tr(T::CodeExpired))),
     }
 }
 

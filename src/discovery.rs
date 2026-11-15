@@ -171,7 +171,7 @@ fn ask<T>(query: &[u8], targets: &[SocketAddr], wait: Duration, missing: &str, a
 #[cfg(any(test, windows))]
 pub fn find(psk: &[u8; 32], targets: &[SocketAddr], wait: Duration) -> io::Result<SocketAddr> {
     let (q, nonce) = query(psk)?;
-    let (ip, port) = ask(&q, targets, wait, "局域网里没有找到 Mac", |a| answered_port(psk, &nonce, a))?;
+    let (ip, port) = ask(&q, targets, wait, crate::i18n::tr(crate::i18n::T::NoMac), |a| answered_port(psk, &nonce, a))?;
     Ok(SocketAddr::new(ip, port))
 }
 
@@ -180,7 +180,7 @@ pub fn find(psk: &[u8; 32], targets: &[SocketAddr], wait: Duration) -> io::Resul
 pub fn find_pairing(targets: &[SocketAddr], wait: Duration) -> io::Result<(SocketAddr, String)> {
     let mut q = PAIR_QUERY.to_vec();
     q.push(DISCOVERY_VERSION);
-    let missing = "局域网里没有正在等待配对的 Mac：请先在 Mac 的 Wisp 里点“配对新电脑”";
+    let missing = crate::i18n::tr(crate::i18n::T::NoMacPairing);
     let (ip, (port, name)) = ask(&q, targets, wait, missing, pairing_answered)?;
     Ok((SocketAddr::new(ip, port), name))
 }

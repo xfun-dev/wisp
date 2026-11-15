@@ -19,6 +19,7 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 - **Lightweight**: about 3 MB of memory on the Mac and 2 MB on Windows; written in Rust, no runtime
 - **Lock screen and UAC**: optionally (a switch in the Windows window or tray menu, one administrator approval), the Mac can also type on the Windows lock screen and sign-in screen and click UAC prompts, so the PC needs no keyboard or mouse of its own
 - **Clear status**: both windows show what is going on at a glance and follow light and dark mode; when the PC can't be found, the Mac lists what it checked and why the last connection ended
+- **Languages**: the interface follows the system language: English, Simplified and Traditional Chinese, Japanese, Korean
 - **Failsafe**: if the background process stalls for more than 1.5 s, a watchdog hands the keyboard and mouse back to the Mac
 
 <table>
@@ -28,7 +29,7 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 </tr>
 </table>
 
-The interface is currently in Chinese.
+The interface follows your system language: English, Simplified Chinese, Traditional Chinese, Japanese or Korean.
 
 ## Install
 

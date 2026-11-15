@@ -208,17 +208,17 @@ pub fn spawn() -> mpsc::Sender<Job> {
                         Outgoing::Send => {
                             let _ = peer.try_send(Msg::Clipboard(text));
                         }
-                        Outgoing::TooLarge(n) => log!("wisp: 剪贴板文字 {} KB 超过 1 MB 上限，这次不同步", n / 1024),
+                        Outgoing::TooLarge(n) => log!("wisp: clipboard text of {} KB is over the 1 MB limit; not synced", n / 1024),
                         Outgoing::Unchanged => {}
                     },
-                    Some(Content::TooLarge(n)) => log!("wisp: 剪贴板文字 {} KB 超过 1 MB 上限，这次不同步", n / 1024),
-                    Some(Content::Concealed) => log!("wisp: 剪贴板是密码管理器标记的敏感内容，不同步"),
+                    Some(Content::TooLarge(n)) => log!("wisp: clipboard text of {} KB is over the 1 MB limit; not synced", n / 1024),
+                    Some(Content::Concealed) => log!("wisp: the clipboard holds concealed content (password manager); not synced"),
                     Some(Content::NoText) => {}
-                    None => log!("wisp: 读取剪贴板失败"),
+                    None => log!("wisp: reading the clipboard failed"),
                 },
                 Job::Pull(text) => match run_helper("write", Some(&text)) {
                     Some(_) => sync.incoming(&text),
-                    None => log!("wisp: 写入剪贴板失败"),
+                    None => log!("wisp: writing the clipboard failed"),
                 },
             }
         }

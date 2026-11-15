@@ -30,7 +30,7 @@ struct WispSettings: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("卸载 Wisp…") { Installer.confirmUninstall() }
+                Button(L("卸载 Wisp…")) { Installer.confirmUninstall() }
             }
         }
     }
@@ -131,14 +131,14 @@ enum Installer {
             }
             try plistText.write(toFile: plist, atomically: true, encoding: .utf8)
         } catch {
-            return "安装后台失败：\(error.localizedDescription)"
+            return L("安装后台失败：%@", error.localizedDescription)
         }
         _ = launchctl(["enable", job])
         for attempt in 1...3 {
             if launchctl(["bootstrap", "gui/\(getuid())", plist]) == 0 { return nil }
             if attempt < 3 { sleep(1) }
         }
-        return "启动后台失败（launchctl bootstrap）"
+        return L("启动后台失败（launchctl bootstrap）")
     }
 
     /// Asks a running menu bar icon to quit. A normal quit (exit 0) is not restarted by
@@ -168,11 +168,11 @@ enum Installer {
     @MainActor
     static func confirmUninstall() {
         let alert = NSAlert()
-        alert.messageText = "卸载 Wisp？"
-        alert.informativeText = "会停止 Wisp，删除它的后台程序、开机启动项、配对和设置，并把 Wisp 移到废纸篓。以后再用需要重新安装和配对。"
+        alert.messageText = L("卸载 Wisp？")
+        alert.informativeText = L("会停止 Wisp，删除它的后台程序、开机启动项、配对和设置，并把 Wisp 移到废纸篓。以后再用需要重新安装和配对。")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "卸载")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("卸载"))
+        alert.addButton(withTitle: L("取消"))
         alert.buttons.first?.hasDestructiveAction = true
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         uninstall()
@@ -263,9 +263,9 @@ struct Status: Equatable {
         bridge = fields["bridge"].flatMap(Int.init)
         if let d = fields["drop"]?.split(separator: ":"), d.count == 2, let at = TimeInterval(d[0]) {
             let reason = switch d[1] {
-            case "slept": "Mac 进入了睡眠"
-            case "silent": "对方没有响应"
-            default: "对方断开了连接"
+            case "slept": L("Mac 进入了睡眠")
+            case "silent": L("对方没有响应")
+            default: L("对方断开了连接")
             }
             drop = (Date(timeIntervalSince1970: at), reason)
         }
@@ -308,7 +308,7 @@ final class Core: ObservableObject {
             } else {
                 status = nil
                 // no core to answer: plain words, not the socket error
-                problem = reply.isEmpty || reply.contains("连不上") ? "Wisp 没有在运行" : reply
+                problem = reply.isEmpty || reply.contains("can't reach") ? L("Wisp 没有在运行") : reply
             }
         }
     }
@@ -411,9 +411,30 @@ extension Color {
     init(_ ns: NSColor) { self.init(nsColor: ns) }
 }
 
+// MARK: - Words (RULES.md U14)
+
+/// The words in the system's language, from <lang>.lproj/Localizable.strings; the
+/// key is the Simplified Chinese text. English for any language without a file.
+func L(_ key: String) -> String { NSLocalizedString(key, comment: "") }
+func L(_ key: String, _ args: CVarArg...) -> String { String(format: NSLocalizedString(key, comment: ""), arguments: args) }
+
+/// The language the window is showing.
+let language = Bundle.main.preferredLocalizations.first ?? "en"
+
+/// "上方", "左侧", "右侧" for an edge.
+func side(_ edge: String) -> String { edge == "left" ? L("左侧") : edge == "right" ? L("右侧") : L("上方") }
+
 extension Font {
-    /// the headline face: Songti, which every Mac has
-    static func serif(_ size: CGFloat) -> Font { .custom("Songti SC", size: size).weight(.semibold) }
+    /// the headline face, a serif every Mac has for the language
+    static func serif(_ size: CGFloat) -> Font {
+        switch language {
+        case "zh-Hans": .custom("Songti SC", size: size).weight(.semibold)
+        case "zh-Hant": .custom("Songti TC", size: size).weight(.semibold)
+        case "ja": .custom("Hiragino Mincho ProN", size: size).weight(.semibold)
+        case "ko": .custom("AppleMyungjo", size: size)
+        default: .system(size: size, weight: .semibold, design: .serif)
+        }
+    }
     static func mono(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
 }
 
@@ -438,7 +459,7 @@ struct Steps {
     let unit: (Double) -> String
 
     static let speed = Steps(slow: 0.6, middle: 1.0, fast: 1.5, range: 0.2...5, step: 0.1) { "\($0.formatted(.number.precision(.fractionLength(1))))×" }
-    static let scroll = Steps(slow: 1.5, middle: 3, fast: 6, range: 0.5...10, step: 0.5) { "\($0.formatted(.number.precision(.fractionLength(0...1)))) 行" }
+    static let scroll = Steps(slow: 1.5, middle: 3, fast: 6, range: 0.5...10, step: 0.5) { L("%@ 行", $0.formatted(.number.precision(.fractionLength(0...1)))) }
 
     /// 0 slow, 1 middle, 2 fast, 3 a value of its own
     func index(_ v: Double) -> Int {
@@ -496,7 +517,9 @@ struct SettingsView: View {
             footer(s)
         }
         // below the title bar, which holds only the traffic lights
-        .frame(width: 400, height: 500 + (fineSpeed ? 34 : 0) + (fineScroll ? 34 : 0))
+        .frame(width: 400)
+        // at least this tall, so states do not jump; taller when a language needs it
+        .frame(minHeight: 500 + (fineSpeed ? 34 : 0) + (fineScroll ? 34 : 0), alignment: .top)
         .background(Color(Ink.paper))
         .background(WindowPaper())
         .foregroundStyle(Color(Ink.text))
@@ -510,37 +533,49 @@ struct SettingsView: View {
     // MARK: top
 
     private func header(_ s: Status?, _ mood: Mood?) -> some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
-                    Circle().fill(Color(dot(mood, s))).frame(width: 7, height: 7)
-                    Text(label(mood, s)).font(.system(size: 12)).tracking(1).foregroundStyle(Color(dot(mood, s)))
-                }
-                Text(headline(mood, s))
-                    .font(.serif(30))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .padding(.top, 8)
-                Text(detail(mood, s))
-                    // figures in the monospaced face; Chinese sentences in the plain one
-                    .font(mood == .connected ? .mono(12) : .system(size: 12))
-                    .foregroundStyle(Color(Ink.soft))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
-                if let problem = core.problem, s != nil {
-                    Text(problem).font(.system(size: 12)).foregroundStyle(Color(Ink.rust)).padding(.top, 6)
-                }
+        let action = primary(mood, s)
+        // the button beside the words when both fit on their lines (most languages and
+        // states), else under them: a long label never squeezes the name (RULES.md U14)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .bottom, spacing: 16) {
+                headerWords(s, mood)
+                Spacer(minLength: 0)
+                if let action { Button(action.title, action: action.run).buttonStyle(Outline()) }
             }
-            Spacer(minLength: 0)
-            if let action = primary(mood, s) {
-                Button(action.title, action: action.run).buttonStyle(Outline())
+            VStack(alignment: .leading, spacing: 14) {
+                headerWords(s, mood)
+                if let action { Button(action.title, action: action.run).buttonStyle(Outline()) }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 28)
         .padding(.top, 2)
         .padding(.bottom, 20)
         .animation(.easeOut(duration: 0.25), value: mood)
+    }
+
+    private func headerWords(_ s: Status?, _ mood: Mood?) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Circle().fill(Color(dot(mood, s))).frame(width: 7, height: 7)
+                Text(label(mood, s)).font(.system(size: 12)).tracking(1).foregroundStyle(Color(dot(mood, s)))
+            }
+            Text(headline(mood, s))
+                .font(.serif(30))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .padding(.top, 8)
+            Text(detail(mood, s))
+                // figures in the monospaced face; sentences in the plain one
+                .font(mood == .connected ? .mono(12) : .system(size: 12))
+                .foregroundStyle(Color(Ink.soft))
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+            if let problem = core.problem, s != nil {
+                Text(problem).font(.system(size: 12)).foregroundStyle(Color(Ink.rust)).padding(.top, 6)
+            }
+        }
     }
 
     private func dot(_ mood: Mood?, _ s: Status?) -> NSColor {
@@ -552,13 +587,13 @@ struct SettingsView: View {
     }
 
     private func label(_ mood: Mood?, _ s: Status?) -> String {
-        guard let mood else { return core.problem == nil ? "正在打开" : "没有在运行" }
+        guard let mood else { return core.problem == nil ? L("正在打开") : L("没有在运行") }
         return switch mood {
-        case .connected: "已连接"
-        case .searching: "正在寻找"
-        case .paused: "已暂停切屏"
-        case .unpaired: "还没有配对"
-        case .pairing: "等待配对"
+        case .connected: L("已连接")
+        case .searching: L("正在寻找")
+        case .paused: L("已暂停切屏")
+        case .unpaired: L("还没有配对")
+        case .pairing: L("等待配对")
         }
     }
 
@@ -566,33 +601,33 @@ struct SettingsView: View {
         guard let s, let mood else { return "Wisp" }
         return switch mood {
         case .connected, .searching, .paused: s.paired
-        case .unpaired: "配对一台电脑"
-        case .pairing: "配对码"
+        case .unpaired: L("配对一台电脑")
+        case .pairing: L("配对码")
         }
     }
 
     private func detail(_ mood: Mood?, _ s: Status?) -> String {
-        guard let s, let mood else { return core.problem == nil ? "" : "点右边的按钮启动它" }
+        guard let s, let mood else { return core.problem == nil ? "" : L("点右边的按钮启动它") }
         switch mood {
         case .connected: return "\(s.peer) · \(s.screen.replacingOccurrences(of: " ", with: ""))"
-        case .paused: return "光标不会切过去；Wisp 重启后自动恢复"
+        case .paused: return L("光标不会切过去；Wisp 重启后自动恢复")
         case .searching:
-            guard let drop = s.drop else { return "等它在局域网里出现" }
-            return "已经找了 \(since(drop.at))"
-        case .unpaired: return "让这台 Mac 的键盘和触控板控制另一台电脑"
-        case .pairing: return "在 Windows 上的 Wisp 里输入下面 6 位数字"
+            guard let drop = s.drop else { return L("等它在局域网里出现") }
+            return L("已经找了 %@", since(drop.at))
+        case .unpaired: return L("让这台 Mac 的键盘和触控板控制另一台电脑")
+        case .pairing: return L("在 Windows 上的 Wisp 里输入下面 6 位数字")
         }
     }
 
     private struct Action { let title: String; let run: () -> Void }
 
     private func primary(_ mood: Mood?, _ s: Status?) -> Action? {
-        guard let mood else { return core.problem == nil ? nil : Action(title: "启动 Wisp") { core.start() } }
+        guard let mood else { return core.problem == nil ? nil : Action(title: L("启动 Wisp")) { core.start() } }
         return switch mood {
-        case .connected: Action(title: "暂停切屏") { core.send(["pause"]) }
-        case .paused: Action(title: "恢复切屏") { core.send(["resume"]) }
-        case .unpaired: Action(title: "配对新电脑") { core.send(["pair"]) }
-        case .pairing: Action(title: "取消") { core.send(["pair-cancel"]) }
+        case .connected: Action(title: L("暂停切屏")) { core.send(["pause"]) }
+        case .paused: Action(title: L("恢复切屏")) { core.send(["resume"]) }
+        case .unpaired: Action(title: L("配对新电脑")) { core.send(["pair"]) }
+        case .pairing: Action(title: L("取消")) { core.send(["pair-cancel"]) }
         case .searching: nil
         }
     }
@@ -609,8 +644,8 @@ struct SettingsView: View {
             if let s { PairingCode(s: s) }
         case .unpaired:
             VStack(spacing: 14) {
-                Text("先在另一台电脑上装好 Wisp，再点上面的“配对新电脑”。")
-                Text("两台电脑要在同一个局域网里。")
+                Text(L("先在另一台电脑上装好 Wisp，再点上面的“配对新电脑”。"))
+                Text(L("两台电脑要在同一个局域网里。"))
             }
             .font(.system(size: 13))
             .foregroundStyle(Color(Ink.soft))
@@ -618,7 +653,7 @@ struct SettingsView: View {
             .padding(.horizontal, 40)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case nil:
-            Text(core.problem == nil ? "" : "Wisp 的后台没有在运行，键盘和触控板不会切到另一台电脑。")
+            Text(core.problem == nil ? "" : L("Wisp 的后台没有在运行，键盘和触控板不会切到另一台电脑。"))
                 .font(.system(size: 13)).foregroundStyle(Color(Ink.soft))
                 .multilineTextAlignment(.center).padding(.horizontal, 40)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -629,9 +664,9 @@ struct SettingsView: View {
 
     private func feel(_ s: Status) -> some View {
         VStack(spacing: 0) {
-            stepRow("鼠标速度", steps: .speed, value: $speed, fine: $fineSpeed, key: "speed")
+            stepRow(L("鼠标速度"), steps: .speed, value: $speed, fine: $fineSpeed, key: "speed")
             Rule().padding(.horizontal, 28)
-            stepRow("滚动速度", steps: .scroll, value: $scroll, fine: $fineScroll, key: "scroll")
+            stepRow(L("滚动速度"), steps: .scroll, value: $scroll, fine: $fineScroll, key: "scroll")
         }
         .padding(.top, 4)
         .disabled(s.paired.isEmpty)
@@ -643,7 +678,7 @@ struct SettingsView: View {
             HStack(spacing: 18) {
                 Text(title).font(.system(size: 14))
                 Spacer()
-                ForEach(Array(["慢", "适中", "快", "细调"].enumerated()), id: \.offset) { i, word in
+                ForEach(Array([L("慢"), L("适中"), L("快"), L("细调")].enumerated()), id: \.offset) { i, word in
                     Button {
                         if i == 3 {
                             fine.wrappedValue.toggle()
@@ -665,7 +700,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(picked == i ? .isSelected : [])
-                    .accessibilityLabel(Text("\(title)\(word)"))
+                    .accessibilityLabel(Text(title + " · " + word))
                 }
             }
             .frame(height: 52)
@@ -690,25 +725,25 @@ struct SettingsView: View {
     private func footer(_ s: Status?) -> some View {
         HStack {
             if let open = s?.bridge, open > 0 {
-                Text("开发者通道 · 开").font(.system(size: 12)).foregroundStyle(Color(Ink.soft))
+                Text(L("开发者通道 · 开")).font(.system(size: 12)).foregroundStyle(Color(Ink.soft))
             }
             Spacer()
             Menu {
-                Toggle("菜单栏图标（约多占 10 MB 内存）", isOn: Binding(get: { menuIcon }, set: { on in
+                Toggle(L("菜单栏图标（约多占 10 MB 内存）"), isOn: Binding(get: { menuIcon }, set: { on in
                     menuIcon = on
                     Task.detached { Installer.setMenu(on) }
                 }))
                 // only a developer build's core reports the field (RULES.md X1, X2)
                 if let open = s?.bridge {
-                    Toggle("开发者通道", isOn: Binding(get: { open > 0 }, set: { core.send(["bridge", $0 ? "on" : "off"]) }))
+                    Toggle(L("开发者通道"), isOn: Binding(get: { open > 0 }, set: { core.send(["bridge", $0 ? "on" : "off"]) }))
                 }
                 if let s, !s.paired.isEmpty {
                     Divider()
-                    Button("配对另一台电脑…") { core.send(["pair"]) }
-                    Button("解除与 \(s.paired) 的配对…", role: .destructive) { confirmUnpair = true }
+                    Button(L("配对另一台电脑…")) { core.send(["pair"]) }
+                    Button(L("解除与 %@ 的配对…", s.paired), role: .destructive) { confirmUnpair = true }
                 }
                 Divider()
-                Button("退出 Wisp") { core.quit() }
+                Button(L("退出 Wisp")) { core.quit() }
             } label: {
                 Text("···").font(.system(size: 16, weight: .semibold)).tracking(2)
             }
@@ -716,11 +751,11 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
-            .accessibilityLabel(Text("更多"))
-            .confirmationDialog("解除与 \(s?.paired ?? "") 的配对？", isPresented: $confirmUnpair) {
-                Button("解除配对", role: .destructive) { core.send(["unpair"]) }
+            .accessibilityLabel(Text(L("更多")))
+            .confirmationDialog(L("解除与 %@ 的配对？", s?.paired ?? ""), isPresented: $confirmUnpair) {
+                Button(L("解除配对"), role: .destructive) { core.send(["unpair"]) }
             } message: {
-                Text("这台 Mac 会断开与它的连接，以后要再用就得重新配对。")
+                Text(L("这台 Mac 会断开与它的连接，以后要再用就得重新配对。"))
             }
         }
         .padding(.horizontal, 28)
@@ -733,9 +768,9 @@ struct SettingsView: View {
 func since(_ at: Date) -> String {
     let secs = max(0, Int(Date().timeIntervalSince(at)))
     switch secs {
-    case ..<60: return "不到 1 分钟"
-    case ..<3600: return "\(secs / 60) 分钟"
-    default: return "\(secs / 3600) 小时 \(secs % 3600 / 60) 分钟"
+    case ..<60: return L("不到 1 分钟")
+    case ..<3600: return L("%ld 分钟", secs / 60)
+    default: return L("%ld 小时 %ld 分钟", secs / 3600, secs % 3600 / 60)
     }
 }
 
@@ -787,7 +822,7 @@ struct Arrangement: View {
                     RoundedRectangle(cornerRadius: 3)
                         .strokeBorder(Color(hover == slot || nearest(screen) == slot && drag != .zero ? Ink.soft : Ink.ghost),
                                       style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
-                        .overlay(Text(slot == "left" ? "左侧" : slot == "right" ? "右侧" : "上方")
+                        .overlay(Text(side(slot))
                             .font(.system(size: 11)).foregroundStyle(Color(Ink.faint)))
                         .contentShape(Rectangle())
                 }
@@ -795,7 +830,7 @@ struct Arrangement: View {
                 .onHover { hover = $0 ? slot : nil }
                 .frame(width: r.width, height: r.height)
                 .offset(x: r.minX, y: r.minY)
-                .accessibilityLabel(Text("把\(name)放到\(slot == "left" ? "左侧" : slot == "right" ? "右侧" : "上方")"))
+                .accessibilityLabel(Text(L("把%@放到%@", name, side(slot))))
             }
             Smoke(from: smokeStart, to: smokeEnd(at))
                 .stroke(Color(live ? Ink.celadon : Ink.ghost), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
@@ -814,8 +849,8 @@ struct Arrangement: View {
                 .onHover { inside in
                     if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
                 }
-                .accessibilityLabel(Text("\(name) 在 Mac 的\(edge == "left" ? "左侧" : edge == "right" ? "右侧" : "上方")"))
-            Text("拖动屏幕，放到它在桌上的位置")
+                .accessibilityLabel(Text(L("%@ 在 Mac 的%@", name, side(edge))))
+            Text(L("拖动屏幕，放到它在桌上的位置"))
                 .font(.system(size: 11)).foregroundStyle(Color(Ink.faint))
                 .frame(width: 400)
                 .offset(y: 190)
@@ -901,21 +936,21 @@ struct Checklist: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            item(ok: address != nil, address != nil ? "这台 Mac 已联网" : "这台 Mac 没有连上局域网",
-                 address.map { "\($0)" } ?? "检查 Wi-Fi 或网线")
-            item(ok: true, "Mac 上的 Wisp 在等待连接", "端口 24801")
+            item(ok: address != nil, address != nil ? L("这台 Mac 已联网") : L("这台 Mac 没有连上局域网"),
+                 address.map { "\($0)" } ?? L("检查 Wi-Fi 或网线"))
+            item(ok: true, L("Mac 上的 Wisp 在等待连接"), L("端口 %@", "24801"))
             VStack(alignment: .leading, spacing: 4) {
                 mark(ok: false)
                     .overlay(alignment: .leading) {
-                        Text("还没有收到 \(s.paired) 的回应").font(.system(size: 14)).fixedSize().offset(x: 26)
+                        Text(L("还没有收到 %@ 的回应", s.paired)).font(.system(size: 14)).fixedSize().offset(x: 26)
                     }
-                Text("那台电脑关机、睡眠或卡住了\n它连的是另一个网络\n代理软件的 TUN 模式挡住了局域网广播")
+                Text(L("那台电脑关机、睡眠或卡住了\n它连的是另一个网络\n代理软件的 TUN 模式挡住了局域网广播"))
                     .font(.system(size: 12)).foregroundStyle(Color(Ink.soft))
                     .lineSpacing(4)
                     .padding(.leading, 26)
             }
             if let drop = s.drop {
-                Text("上次断开 · \(drop.at.formatted(date: .omitted, time: .shortened)) · \(drop.reason)")
+                Text(L("上次断开 · %@ · %@", drop.at.formatted(date: .omitted, time: .shortened), drop.reason))
                     .font(.system(size: 12)).foregroundStyle(Color(Ink.faint))
                     .padding(.top, 2)
             }
@@ -957,9 +992,9 @@ struct PairingCode: View {
                 }
             }
             .accessibilityElement()
-            .accessibilityLabel(Text("配对码 " + s.code.map(String.init).joined(separator: " ")))
-            Text("还剩 \(s.codeSecondsLeft / 60):\(String(format: "%02d", s.codeSecondsLeft % 60)) · 还可以输错 \(s.codeTriesLeft) 次")
-                .font(.mono(12)).foregroundStyle(Color(Ink.soft))
+            .accessibilityLabel(Text(L("配对码") + " " + s.code.map(String.init).joined(separator: " ")))
+            Text(L("还剩 %@ · 还可以输错 %ld 次", "\(s.codeSecondsLeft / 60):\(String(format: "%02d", s.codeSecondsLeft % 60))", s.codeTriesLeft))
+                .font(.system(size: 12)).monospacedDigit().foregroundStyle(Color(Ink.soft))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

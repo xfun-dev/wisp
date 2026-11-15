@@ -10,6 +10,7 @@ macro_rules! log {
     ($($arg:tt)*) => { crate::write_log(format_args!($($arg)*)) };
 }
 
+mod i18n;
 #[cfg(all(target_os = "macos", feature = "bridge"))]
 mod bridge_mac;
 #[cfg(target_os = "macos")]
@@ -71,14 +72,14 @@ fn win(args: &[String]) -> i32 {
         }
         [on] if on == "on" || on == "off" => format!("bridge {on}"),
         _ => {
-            eprintln!("用法: wisp win on | off | put <本地文件> <远程路径> | get <远程路径> <本地文件> | exec \"<命令>\" [--timeout 秒]");
+            eprintln!("usage: wisp win on | off | put <local file> <remote path> | get <remote path> <local file> | exec \"<command>\" [--timeout seconds]");
             return 2;
         }
     };
     let reply = match control::read_token(&data_dir()).and_then(|t| control::request(&t, control::PORT, &line)) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("wisp: 连不上正在运行的 Wisp：{e}");
+            eprintln!("wisp: can't reach the running Wisp: {e}");
             return 1;
         }
     };
@@ -200,7 +201,7 @@ fn main() {
                 println!("{reply}");
                 std::process::exit(if reply.starts_with("ok") { 0 } else { 1 });
             }
-            Err(e) => fail(1, &format!("wisp: 连不上正在运行的 Wisp：{e}")),
+            Err(e) => fail(1, &format!("wisp: can't reach the running Wisp: {e}")),
         },
         #[cfg(all(target_os = "macos", feature = "bridge"))]
         Some("win") => std::process::exit(win(&args[1..])),
@@ -210,12 +211,12 @@ fn main() {
         Some("pair") => match args.get(1).and_then(|c| logic::pairing::typed(c)) {
             Some(code) => match client_win::pair(&code, port) {
                 Ok(name) => {
-                    println!("已与 {name} 配对");
+                    println!("paired with {name}");
                     std::process::exit(0);
                 }
-                Err(e) => fail(1, &format!("配对失败：{e}")),
+                Err(e) => fail(1, &format!("pairing failed: {e}")),
             },
-            None => fail(2, "配对码是 6 位数字"),
+            None => fail(2, "the pairing code is 6 digits"),
         },
         _ => fail(2, USAGE),
     };

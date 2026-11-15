@@ -3,6 +3,7 @@
 //! logon, puts "Wisp" in the Start menu and in Settings → Apps (to uninstall), starts
 //! the background client and opens the status window. `wisp uninstall` undoes all of it.
 
+use crate::i18n::{tr, trf, T};
 use crate::client_win::RUNNING_MUTEX;
 use crate::win32::{wide, Hwnd};
 use std::ffi::c_void;
@@ -170,13 +171,13 @@ fn make_shortcut(link: &Path, target: &Path, args: &str) -> io::Result<()> {
     type Save = unsafe extern "system" fn(*mut c_void, *const u16, i32) -> i32;
     type CoInitializeEx = unsafe extern "system" fn(*mut c_void, u32) -> i32;
     type CoCreateInstance = unsafe extern "system" fn(*const Guid, *mut c_void, u32, *const Guid, *mut *mut c_void) -> i32;
-    let fail = |what: &str, hr: i32| io::Error::other(format!("{what} 失败（0x{hr:08X}）"));
+    let fail = |what: T, hr: i32| io::Error::other(trf(T::StepFailed, &[&tr(what), &format!("{hr:08X}")]));
     unsafe {
         // loaded here, not linked: the background client shares this exe (RULES.md R6)
         let ole = LoadLibraryExW(wide("ole32.dll").as_ptr(), ptr::null_mut(), 0x800);
         let (init, create) = (GetProcAddress(ole, b"CoInitializeEx\0".as_ptr()), GetProcAddress(ole, b"CoCreateInstance\0".as_ptr()));
         if ole.is_null() || init.is_null() || create.is_null() {
-            return Err(io::Error::other("无法加载 ole32.dll"));
+            return Err(io::Error::other("ole32.dll could not be loaded"));
         }
         // SAFETY: the two exports have these signatures
         let (init, create): (CoInitializeEx, CoCreateInstance) = (std::mem::transmute(init), std::mem::transmute(create));
@@ -184,7 +185,7 @@ fn make_shortcut(link: &Path, target: &Path, args: &str) -> io::Result<()> {
         let mut shell = ptr::null_mut();
         let hr = create(&CLSID_SHELL_LINK, ptr::null_mut(), CLSCTX_INPROC_SERVER, &IID_SHELL_LINK_W, &mut shell);
         if hr < 0 {
-            return Err(fail("创建快捷方式", hr));
+            return Err(fail(T::CreateShortcut, hr));
         }
         // SAFETY: IShellLinkW's vtable: QueryInterface 0, Release 2, SetDescription 7,
         // SetWorkingDirectory 9, SetArguments 11, SetIconLocation 17, SetPath 20
@@ -196,14 +197,14 @@ fn make_shortcut(link: &Path, target: &Path, args: &str) -> io::Result<()> {
         call(20, &target.to_string_lossy());
         call(11, args);
         call(9, &target.parent().unwrap_or(target).to_string_lossy());
-        call(7, "Wisp：连接状态与配对");
+        call(7, tr(T::ShortcutNote));
         let qi: QueryInterface = std::mem::transmute(*vt.add(0));
         let mut file = ptr::null_mut();
         let hr = qi(shell, &IID_PERSIST_FILE, &mut file);
         let release: Release = std::mem::transmute(*vt.add(2));
         if hr < 0 {
             release(shell);
-            return Err(fail("保存快捷方式", hr));
+            return Err(fail(T::SaveShortcut, hr));
         }
         // IPersistFile: Release 2, Save 6
         let fvt = *(file as *const *const usize);
@@ -213,7 +214,7 @@ fn make_shortcut(link: &Path, target: &Path, args: &str) -> io::Result<()> {
         file_release(file);
         release(shell);
         if hr < 0 {
-            return Err(fail("保存快捷方式", hr));
+            return Err(fail(T::SaveShortcut, hr));
         }
     }
     Ok(())
@@ -235,7 +236,7 @@ fn copy_self(to: &Path) -> io::Result<()> {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    Err(last.unwrap_or_else(|| io::Error::other("复制失败")))
+    Err(last.unwrap_or_else(|| io::Error::other(tr(T::CopyFailed))))
 }
 
 /// Starts `exe arg` sharing nothing with this process: whoever ran the installer (a
@@ -314,7 +315,7 @@ pub fn install(quiet: bool, user_only: bool) -> ! {
             register(&exe, false)?;
             if !user_only {
                 crate::service_win::elevated(&format!("service-install {}", crate::service_win::user_pair_arg()))
-                    .map_err(|e| io::Error::other(format!("开着「锁屏和权限弹窗也能控制」时，更新需要管理员授权（{e}）")))?;
+                    .map_err(|e| io::Error::other(trf(T::UpdateNeedsAdmin, &[&e])))?;
             }
             return Ok(());
         }
@@ -337,7 +338,7 @@ pub fn install(quiet: bool, user_only: bool) -> ! {
         }
         Err(e) => {
             if !quiet {
-                message(&format!("Wisp 安装失败：{e}"), true);
+                message(&trf(T::InstallFailed, &[&e]), true);
             }
             std::process::exit(1);
         }
@@ -352,7 +353,7 @@ pub fn uninstall(quiet: bool) -> ! {
     if crate::service_win::installed() {
         if let Err(e) = crate::service_win::elevated("service-uninstall") {
             if !quiet {
-                message(&format!("Wisp 没有卸载：{e}"), true);
+                message(&trf(T::UninstallFailed, &[&e]), true);
             }
             std::process::exit(1);
         }
@@ -376,7 +377,7 @@ pub fn uninstall(quiet: bool) -> ! {
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     if !quiet {
-        message("Wisp 已卸载。", false);
+        message(tr(T::Uninstalled), false);
     }
     std::process::exit(0);
 }

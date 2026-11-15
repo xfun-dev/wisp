@@ -15,6 +15,32 @@ enum MenuBar {
     }
 }
 
+/// The menu's few words in the system's language (RULES.md U14). This process is
+/// copied out of the app, away from its .lproj files, so they live here: English,
+/// Simplified Chinese, Traditional Chinese, Japanese, Korean.
+enum Words {
+    static let column: Int = {
+        let tag = (Locale.preferredLanguages.first ?? "en").lowercased()
+        if tag.hasPrefix("zh") {
+            return tag.contains("hant") || tag.hasSuffix("-tw") || tag.hasSuffix("-hk") || tag.hasSuffix("-mo") ? 2 : 1
+        }
+        return tag.hasPrefix("ja") ? 3 : tag.hasPrefix("ko") ? 4 : 0
+    }()
+
+    static func of(_ all: [String]) -> String { all[column] }
+
+    static var notRunning: String { of(["Wisp isn't running", "Wisp 没有在运行", "Wisp 未執行", "Wisp は動作していません", "Wisp가 실행 중이 아닙니다"]) }
+    static var waitingToPair: String { of(["Waiting to pair", "正在等待配对", "正在等待配對", "ペアリング待ち", "페어링 대기 중"]) }
+    static var notPaired: String { of(["Not paired", "还没有配对", "尚未配對", "未ペアリング", "페어링 안 됨"]) }
+    static var paused: String { of(["Switching paused", "已暂停切屏", "已暫停切換", "切り替えを一時停止中", "전환 일시 정지됨"]) }
+    static func connected(_ name: String) -> String { of(["Connected to \(name)", "已连接 \(name)", "已連線 \(name)", "\(name) に接続中", "\(name)에 연결됨"]) }
+    static func waiting(_ name: String) -> String { of(["Waiting for \(name)", "等待 \(name) 连接", "等待 \(name) 連線", "\(name) の接続を待っています", "\(name) 연결을 기다리는 중"]) }
+    static var pause: String { of(["Pause Switching", "暂停切屏", "暫停切換", "切り替えを一時停止", "전환 일시 정지"]) }
+    static var start: String { of(["Start Wisp", "启动 Wisp", "啟動 Wisp", "Wisp を起動", "Wisp 시작"]) }
+    static var settings: String { of(["Open Wisp Settings…", "打开 Wisp 设置…", "開啟 Wisp 設定…", "Wisp の設定を開く…", "Wisp 설정 열기…"]) }
+    static var quit: String { of(["Quit Wisp", "退出 Wisp", "結束 Wisp", "Wisp を終了", "Wisp 종료"]) }
+}
+
 /// One `status` reply from the core, as far as the menu needs it.
 struct Snapshot: Equatable {
     var running = false
@@ -40,11 +66,11 @@ struct Snapshot: Equatable {
     }
 
     var words: String {
-        if !running { return "Wisp 没有在运行" }
-        if pairing { return "正在等待配对" }
-        if paired.isEmpty { return "还没有配对" }
-        if paused { return "已暂停切屏" }
-        return connected ? "已连接 \(paired)" : "等待 \(paired) 连接"
+        if !running { return Words.notRunning }
+        if pairing { return Words.waitingToPair }
+        if paired.isEmpty { return Words.notPaired }
+        if paused { return Words.paused }
+        return connected ? Words.connected(paired) : Words.waiting(paired)
     }
 
     /// The icon is a template, drawn by macOS in the menu bar's own colour; paused or not
@@ -127,20 +153,20 @@ final class Controller: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(state)
         menu.addItem(.separator())
         if shown.running {
-            let pause = NSMenuItem(title: "暂停切屏", action: #selector(togglePause), keyEquivalent: "")
+            let pause = NSMenuItem(title: Words.pause, action: #selector(togglePause), keyEquivalent: "")
             pause.target = self
             pause.state = shown.paused ? .on : .off
             menu.addItem(pause)
         } else {
-            let start = NSMenuItem(title: "启动 Wisp", action: #selector(startCore), keyEquivalent: "")
+            let start = NSMenuItem(title: Words.start, action: #selector(startCore), keyEquivalent: "")
             start.target = self
             menu.addItem(start)
         }
-        let settings = NSMenuItem(title: "打开 Wisp 设置…", action: #selector(openSettings), keyEquivalent: ",")
+        let settings = NSMenuItem(title: Words.settings, action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "退出 Wisp", action: #selector(quitAll), keyEquivalent: "q")
+        let quit = NSMenuItem(title: Words.quit, action: #selector(quitAll), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
     }

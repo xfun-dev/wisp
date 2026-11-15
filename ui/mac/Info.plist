@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string><string>zh-Hant</string><string>ja</string><string>ko</string></array>
     <key>CFBundleIdentifier</key><string>fun.xfun.wisp.settings</string>
     <key>CFBundleName</key><string>Wisp</string>
     <key>CFBundleDisplayName</key><string>Wisp</string>

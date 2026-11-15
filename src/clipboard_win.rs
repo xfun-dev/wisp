@@ -130,10 +130,10 @@ impl Clipboard {
                 Outgoing::Send => {
                     let _ = peer.try_send(Msg::Clipboard(text));
                 }
-                Outgoing::TooLarge(n) => log!("wisp: 剪贴板文字 {} KB 超过 1 MB 上限，这次不同步", n / 1024),
+                Outgoing::TooLarge(n) => log!("wisp: clipboard text of {} KB is over the 1 MB limit; not synced", n / 1024),
                 Outgoing::Unchanged => {}
             },
-            Content::Concealed => log!("wisp: 剪贴板是密码管理器标记的敏感内容，不同步"),
+            Content::Concealed => log!("wisp: the clipboard holds concealed content (password manager); not synced"),
             Content::Unchanged | Content::NoText => {}
         }
     }
@@ -143,7 +143,7 @@ impl Clipboard {
         if self.write(text) {
             self.sync.incoming(text);
         } else {
-            log!("wisp: 写入剪贴板失败");
+            log!("wisp: writing the clipboard failed");
         }
     }
 }
