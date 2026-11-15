@@ -520,6 +520,8 @@ struct SettingsView: View {
         .frame(width: 400)
         // at least this tall, so states do not jump; taller when a language needs it
         .frame(minHeight: 500 + (fineSpeed ? 34 : 0) + (fineScroll ? 34 : 0), alignment: .top)
+        // exactly that tall: never a size macOS remembered from an older window
+        .fixedSize(horizontal: false, vertical: true)
         .background(Color(Ink.paper))
         .background(WindowPaper())
         .foregroundStyle(Color(Ink.text))

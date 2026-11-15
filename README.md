@@ -24,8 +24,8 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 
 <table>
 <tr>
-<td align="center" width="50%"><img src="docs/mac-settings.png" alt="Mac settings window" width="360"><br><sub>Mac settings</sub></td>
-<td align="center" width="50%"><img src="docs/windows-status.png" alt="Windows status window" width="360"><br><sub>Windows status</sub></td>
+<td align="center" width="50%"><img src="docs/mac-settings-en.png" alt="Mac settings window" width="360"><br><sub>Mac settings</sub></td>
+<td align="center" width="50%"><img src="docs/windows-status-en.png" alt="Windows status window" width="360"><br><sub>Windows status</sub></td>
 </tr>
 </table>
 
