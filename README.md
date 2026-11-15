@@ -13,12 +13,12 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 ## Features
 
 - **Edge switching**: move the cursor past the edge of the Mac's screen to control Windows; the other screen can be above, left or right of the Mac
-- **Keyboard mapping**: keys map by physical position, ⌘ becomes Ctrl, pinch-to-zoom becomes Ctrl + scroll; the top row's volume, playback, Mission Control and Spotlight keys work on Windows too; held keys are released when you switch
+- **Keyboard mapping**: keys map by physical position, ⌘ becomes Ctrl, pinch-to-zoom becomes Ctrl + scroll; the volume and playback keys on the top row work on Windows as usual, and Mission Control and Spotlight open Windows' Task View and Search; held keys are released when you switch
 - **Clipboard sync**: plain text both ways, up to 1 MB, skipping anything a password manager marks as sensitive
 - **Pairing and encryption**: automatic discovery on the local network, pairing with a 6-digit code (SPAKE2), traffic encrypted with ChaCha20-Poly1305
 - **Lightweight**: about 3 MB of memory on the Mac and 2 MB on Windows; written in Rust, no runtime
-- **Lock screen and UAC**: optionally (a switch in the Windows window or tray menu, one administrator approval), the Mac can also type on the Windows lock screen and sign-in screen and click UAC prompts, so the PC needs no keyboard or mouse of its own
-- **Clear status**: both windows show what is going on at a glance and follow light and dark mode; when the PC can't be found, the Mac lists what it checked and why the last connection ended
+- **Lock screen and UAC prompts**: turn on the switch in the Windows status window or tray menu and approve it once; after that the Windows lock screen, sign-in screen and UAC prompts take input from the Mac too, so the PC needs no keyboard or mouse of its own
+- **Says why it can't connect**: when the PC can't be found, the Mac window shows how long it has been looking, what it checked and why the last connection ended; both windows follow light and dark mode
 - **Languages**: the interface follows the system language: English, Simplified and Traditional Chinese, Japanese, Korean
 - **Failsafe**: if the background process stalls for more than 1.5 s, a watchdog hands the keyboard and mouse back to the Mac
 
@@ -28,8 +28,6 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 <td align="center" width="50%"><img src="docs/windows-status-en.png" alt="Windows status window" width="360"><br><sub>Windows status</sub></td>
 </tr>
 </table>
-
-The interface follows your system language: English, Simplified Chinese, Traditional Chinese, Japanese or Korean.
 
 ## Install
 
@@ -43,9 +41,9 @@ Download from [Releases](https://github.com/xfun-dev/wisp/releases/latest). The 
 **Windows** (Windows 10/11)
 1. Double-click `Wisp-<version>.exe`; it installs itself and opens the status window. If "Windows protected your PC" appears, click "More info" → "Run anyway" (Wisp is not code-signed)
 
-**Pairing**: in Wisp on the Mac, click "配对新电脑" (pair a new computer) and type the 6 digits into the Windows status window. Once paired, the two connect on their own at startup.
+**Pairing**: in Wisp on the Mac, click "Pair New Computer" and type the 6 digits into the Windows status window. Once paired, the two connect on their own at startup.
 
-To uninstall: on the Mac, choose "卸载 Wisp…" (Uninstall Wisp) from the Wisp menu; on Windows, uninstall it from Settings → Apps.
+To uninstall: on the Mac, choose "Uninstall Wisp…" from the Wisp menu; on Windows, uninstall it from Settings → Apps.
 
 ## Build from source
 
@@ -60,12 +58,12 @@ The behaviour spec is [RULES.md](RULES.md) (in Chinese); every rule names the te
 
 ### Developer bridge (developer builds)
 
-Builds made with `--features bridge` (as `scripts/deploy.sh` does) carry a developer bridge: the paired Mac can run commands and move files on the Windows PC over the existing encrypted link, so deploying and testing need no other remote tool.
+Developer builds carry a developer bridge; they are built with `--features bridge`, as `scripts/deploy.sh` does. The paired Mac can run commands and move files on the Windows PC over the existing encrypted link, so deploying and testing need no other remote tool.
 
-It is made mainly for AI assistants: an AI working on the Mac (Claude Code, for example) can use it to operate the Windows PC directly and do anything that needs doing there.
+The bridge is mainly for AI coding assistants on the Mac. Claude Code, for example, can use it to build, run tests and read logs on Windows.
 
-- Turn it on: in the Mac settings window, switch on 开发者通道 (developer bridge) in the ··· menu (or run `wisp win on`); switch it off the same way. It stays on until you turn it off, across restarts and reconnects
-- While it is on, both sides show it: both windows say the bridge is open
+- Turn it on: in the Mac settings window, switch on Developer Bridge in the ··· menu (or run `wisp win on`); switch it off the same way. It stays on until you turn it off, across restarts and reconnects
+- While it is on, both windows say the bridge is open
 - Use: `wisp win exec "<command>" [--timeout seconds]`, `wisp win put <local> <remote>`, `wisp win get <remote> <local>`
 
 In Releases, the files ending in `-dev` are the developer builds with the bridge; the plain ones do not have it. Both computers need the developer build.
