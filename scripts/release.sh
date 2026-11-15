@@ -18,7 +18,8 @@ scripts/verify.sh
 rm -rf dist && mkdir -p dist
 
 # byte-wise (LC_ALL=C, -a): in a UTF-8 locale grep may not read a binary at all
-has_bridge() { LC_ALL=C grep -qa "bridge-exec" $1 || LC_ALL=C grep -qa "开发者通道" $1; }
+# a message only the bridge code carries (the five-language table is in every build)
+has_bridge() { LC_ALL=C grep -qa "bridge-exec" $1 || LC_ALL=C grep -qa "the developer bridge is off" $1; }
 
 # the settings window and the menu bar icon are the same in both sets: build them once
 for arch in arm64 x86_64; do

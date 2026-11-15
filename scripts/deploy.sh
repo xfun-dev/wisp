@@ -37,7 +37,7 @@ if [[ $target == all || $target == win ]]; then
   # and refuse to send an exe without the bridge, which would cut this very link off
   touch src/main.rs
   cargo build --release --quiet --target x86_64-pc-windows-gnu --features bridge
-  LC_ALL=C grep -qa "bridge-exec" target/x86_64-pc-windows-gnu/release/wisp.exe || LC_ALL=C grep -qa "开发者通道" target/x86_64-pc-windows-gnu/release/wisp.exe || { print -u2 "deploy: wisp.exe has no developer bridge; not sending it"; exit 1; }
+  LC_ALL=C grep -qa "bridge-exec" target/x86_64-pc-windows-gnu/release/wisp.exe || LC_ALL=C grep -qa "the developer bridge is off" target/x86_64-pc-windows-gnu/release/wisp.exe || { print -u2 "deploy: wisp.exe has no developer bridge; not sending it"; exit 1; }
   (( ${#BRIDGE} )) && [[ -n $WIN_DIR ]] || { print -u2 "deploy: set WISP_WIN_BRIDGE and WISP_WIN_DIR in scripts/local.env"; exit 1; }
   # the Mac core may have just restarted: Wisp's own bridge needs it up and the PC back
   for _ in {1..60}; do
