@@ -144,6 +144,7 @@ texts! {
     SetRange => ["{0} must be between {1} and {2}", "{0}要在 {1} 到 {2} 之间", "{0}須介於 {1} 到 {2} 之間", "{0}は {1}〜{2} の範囲で指定してください", "{0}은(는) {1}에서 {2} 사이여야 합니다"],
     SetEdge => ["The side must be top, left or right", "方向只能是 top、left、right", "方向只能是 top、left、right", "方向は top、left、right のいずれかです", "방향은 top, left, right 중 하나여야 합니다"],
     MouseSpeed => ["Mouse speed", "鼠标速度", "滑鼠速度", "マウスの速度", "마우스 속도"],
+    Position => ["Screen position", "屏幕位置", "螢幕位置", "画面の位置", "화면 위치"],
     ScrollSpeed => ["Scroll speed", "滚动速度", "捲動速度", "スクロールの速度", "스크롤 속도"],
     SetUnknown => ["No such setting: {0}", "没有这个设置：{0}", "沒有這個設定：{0}", "そのような設定はありません：{0}", "그런 설정이 없습니다: {0}"],
     SaveFailed => ["Couldn't save the settings: {0}", "保存设置失败：{0}", "儲存設定失敗：{0}", "設定を保存できませんでした：{0}", "설정을 저장하지 못했습니다: {0}"],

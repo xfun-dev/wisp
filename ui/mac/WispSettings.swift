@@ -220,8 +220,11 @@ struct Status: Equatable {
     var connected = false
     var peer = ""
     var screen = ""
+    /// the other screen in points (pixels over its scale), zero until it has connected (RULES.md L1)
+    var remote = CGSize.zero
     var paused = false
     var edge = "top"
+    var offset = 0.0
     var speed = 1.0
     var scroll = 3.0
     /// the paired machine's name, empty while unpaired
@@ -237,7 +240,7 @@ struct Status: Equatable {
 
     static func == (a: Status, b: Status) -> Bool {
         a.connected == b.connected && a.peer == b.peer && a.screen == b.screen && a.paused == b.paused
-            && a.edge == b.edge && a.speed == b.speed && a.scroll == b.scroll && a.paired == b.paired
+            && a.remote == b.remote && a.edge == b.edge && a.offset == b.offset && a.speed == b.speed && a.scroll == b.scroll && a.paired == b.paired
             && a.code == b.code && a.codeSecondsLeft == b.codeSecondsLeft && a.codeTriesLeft == b.codeTriesLeft
             && a.bridge == b.bridge && a.drop?.at == b.drop?.at && a.drop?.reason == b.drop?.reason
     }
@@ -254,6 +257,11 @@ struct Status: Equatable {
         screen = fields["screen"]?.replacingOccurrences(of: "x", with: " × ") ?? ""
         paused = fields["paused"] == "true"
         edge = fields["edge"] ?? edge
+        offset = fields["offset"].flatMap(Double.init) ?? offset
+        if let wh = fields["screen"]?.split(separator: "x"), wh.count == 2, let w = Double(wh[0]), let h = Double(wh[1]) {
+            let scale = fields["scale"].flatMap(Double.init).flatMap { $0 > 0 ? $0 : nil } ?? 1
+            remote = CGSize(width: w / scale, height: h / scale)
+        }
         speed = fields["speed"].flatMap(Double.init) ?? speed
         scroll = fields["scroll"].flatMap(Double.init) ?? scroll
         paired = fields["paired"] ?? ""
@@ -639,7 +647,10 @@ struct SettingsView: View {
     @ViewBuilder private func stage(_ s: Status?, _ mood: Mood?) -> some View {
         switch mood {
         case .connected, .paused:
-            Arrangement(edge: s?.edge ?? "top", name: s?.paired ?? "", live: mood == .connected) { core.send(["set", "edge=\($0)"]) }
+            Arrangement(edge: s?.edge ?? "top", offset: s?.offset ?? 0, remote: s?.remote ?? .zero,
+                        name: s?.paired ?? "", live: mood == .connected) { edge, offset in
+                core.send(["set", "edge=\(edge)", "offset=\(Int(offset))"])
+            }
         case .searching:
             if let s { Checklist(s: s) }
         case .pairing:
@@ -796,91 +807,174 @@ struct Outline: ButtonStyle {
     }
 }
 
-/// Where the other screen stands, drawn in line: the Mac in the middle, the screen
-/// above, left or right of it. Drag the screen to another place, or click a place.
+/// Where the other screen stands, drawn in line and to scale in points, as macOS
+/// draws its own displays: the Mac at the foot, the screen above, left or right of
+/// it, shifted along that side as far as the two still share an edge (RULES.md L1).
+/// The screen follows the hand while dragged; let go, it settles on the nearest
+/// side, and the stretch of edge the cursor can cross is drawn in colour.
 struct Arrangement: View {
     let edge: String
+    let offset: Double
+    /// the other screen in points; zero before it has said
+    let remote: CGSize
     let name: String
     /// connected and not paused: the smoke is drawn in colour
     let live: Bool
-    let pick: (String) -> Void
-    @State private var drag: CGSize = .zero
-    @State private var hover: String?
+    let place: (String, Double) -> Void
+    /// top-left of the screen while it is being dragged
+    @State private var free: CGPoint?
+    @State private var grabbedAt: CGPoint = .zero
+    /// what was let go of, shown until the core's status says the same
+    @State private var pending: (edge: String, offset: Double)?
 
-    private static let slots: [String: CGRect] = [
-        "top": CGRect(x: 150, y: 16, width: 100, height: 64),
-        "left": CGRect(x: 34, y: 92, width: 100, height: 64),
-        "right": CGRect(x: 266, y: 92, width: 100, height: 64),
-    ]
-    private let mac = CGRect(x: 160, y: 110, width: 80, height: 50)
+    private static let width: CGFloat = 400
+    /// the drawing's foot: below it, a strip where the screen cannot go (RULES.md L9)
+    private static let floor: CGFloat = 164
+    private static let sides = ["top", "left", "right"]
+    /// the two screens always share this much edge, in points (src/logic/capture.rs)
+    private static let minShared = 48.0
+
+    private var macPt: CGSize { NSScreen.screens.first?.frame.size ?? CGSize(width: 1512, height: 982) }
+    private var winPt: CGSize { remote.width > 0 && remote.height > 0 ? remote : CGSize(width: 1920, height: 1080) }
+
+    /// points to drawing units: the Mac at most 80 wide, and every arrangement fits
+    private var k: CGFloat {
+        min(80 / macPt.width,
+            (Self.width - 16) / (2 * winPt.width + macPt.width),
+            (Self.floor - 16) / (winPt.height + macPt.height))
+    }
+
+    private var mac: CGRect {
+        let w = macPt.width * k, h = macPt.height * k
+        return CGRect(x: (Self.width - w) / 2, y: Self.floor - 10 - h, width: w, height: h)
+    }
+
+    private var shown: (edge: String, offset: Double) { pending ?? (edge, offset) }
+
+    /// The offset as the core will use it: the screens keep MIN_SHARED points of edge in common.
+    private func clamped(_ edge: String, _ off: Double) -> Double {
+        let span = edge == "top" ? macPt.width : macPt.height
+        let len = edge == "top" ? winPt.width : winPt.height
+        let shared = min(Self.minShared, span, len)
+        let centred = (span - len) / 2
+        return (min(max(off, shared - len - centred), span - shared - centred)).rounded()
+    }
+
+    private func rect(_ edge: String, _ off: Double) -> CGRect {
+        let w = winPt.width * k, h = winPt.height * k, m = mac
+        return switch edge {
+        case "left": CGRect(x: m.minX - w, y: m.minY + (m.height - h) / 2 + off * k, width: w, height: h)
+        case "right": CGRect(x: m.maxX, y: m.minY + (m.height - h) / 2 + off * k, width: w, height: h)
+        default: CGRect(x: m.minX + (m.width - w) / 2 + off * k, y: m.minY - h, width: w, height: h)
+        }
+    }
+
+    /// The nearest place against a side for a screen whose top-left is at `p`.
+    private func settle(_ p: CGPoint) -> (edge: String, offset: Double) {
+        let m = mac, w = winPt.width * k, h = winPt.height * k
+        return Self.sides.map { side -> (String, Double, CGFloat) in
+            let off = clamped(side, side == "top" ? (p.x + w / 2 - m.midX) / k : (p.y + h / 2 - m.midY) / k)
+            let r = rect(side, off)
+            return (side, off, hypot(r.minX - p.x, r.minY - p.y))
+        }
+        .min { $0.2 < $1.2 }
+        .map { ($0.0, $0.1) }!
+    }
+
+    /// The stretch of the Mac's edge the cursor crosses.
+    private func shared(_ edge: String, _ r: CGRect) -> CGRect {
+        let m = mac
+        if edge == "top" {
+            let a = max(m.minX, r.minX), b = min(m.maxX, r.maxX)
+            return CGRect(x: a, y: m.minY - 2, width: max(b - a, 0), height: 4)
+        }
+        let a = max(m.minY, r.minY), b = min(m.maxY, r.maxY)
+        return CGRect(x: edge == "left" ? m.minX - 2 : m.maxX - 2, y: a, width: 4, height: max(b - a, 0))
+    }
 
     var body: some View {
-        let at = Self.slots[edge] ?? Self.slots["top"]!
-        let screen = at.offsetBy(dx: drag.width, dy: drag.height)
+        let (at, off) = shown
+        let placed = rect(at, clamped(at, off))
+        let screen = free.map { CGRect(origin: $0, size: placed.size) } ?? placed
+        let target = free.map(settle)
+        let m = mac
         ZStack(alignment: .topLeading) {
-            ForEach(["top", "left", "right"].filter { $0 != edge }, id: \.self) { slot in
-                let r = Self.slots[slot]!
-                Button { pick(slot) } label: {
-                    RoundedRectangle(cornerRadius: 3)
-                        .strokeBorder(Color(hover == slot || nearest(screen) == slot && drag != .zero ? Ink.soft : Ink.ghost),
-                                      style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
-                        .overlay(Text(side(slot))
-                            .font(.system(size: 11)).foregroundStyle(Color(Ink.faint)))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .onHover { hover = $0 ? slot : nil }
-                .frame(width: r.width, height: r.height)
-                .offset(x: r.minX, y: r.minY)
-                .accessibilityLabel(Text(L("把%@放到%@", name, side(slot))))
+            NoGo()
+                .frame(width: Self.width, height: 186 - (m.maxY + 14))
+                .offset(y: m.maxY + 14)
+            if let target {
+                let r = rect(target.edge, target.offset)
+                RoundedRectangle(cornerRadius: 3)
+                    .strokeBorder(Color(Ink.soft), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                    .frame(width: r.width, height: r.height)
+                    .offset(x: r.minX, y: r.minY)
             }
-            Smoke(from: smokeStart, to: smokeEnd(at))
-                .stroke(Color(live ? Ink.celadon : Ink.ghost), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
-                .opacity(drag == .zero ? 1 : 0)
-            LineMac().frame(width: 108, height: 62).offset(x: mac.minX - 14, y: mac.minY)
+            LineMac().frame(width: m.width + 28, height: m.height + 12).offset(x: m.minX - 14, y: m.minY)
             LineScreen(name: name)
                 .frame(width: screen.width, height: screen.height)
+                .shadow(color: .black.opacity(free == nil ? 0 : 0.12), radius: 8, y: 4)
                 .offset(x: screen.minX, y: screen.minY)
                 .gesture(DragGesture()
-                    .onChanged { drag = $0.translation }
+                    .onChanged { g in
+                        if free == nil { grabbedAt = placed.origin }
+                        // never under the Mac: the screen's middle stays above its foot
+                        free = CGPoint(x: grabbedAt.x + g.translation.width,
+                                       y: min(grabbedAt.y + g.translation.height, m.maxY - placed.height / 2))
+                    }
                     .onEnded { _ in
-                        let slot = nearest(screen)
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { drag = .zero }
-                        if slot != edge { pick(slot) }
+                        guard let f = free else { return }
+                        let t = settle(f)
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            free = nil
+                            pending = t
+                        }
+                        if t.edge != edge || t.offset != offset { place(t.edge, t.offset) } else { pending = nil }
                     })
                 .onHover { inside in
                     if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
                 }
-                .accessibilityLabel(Text(L("%@ 在 Mac 的%@", name, side(edge))))
+                .accessibilityLabel(Text(L("%@ 在 Mac 的%@", name, side(at))))
+                .accessibilityActions {
+                    ForEach(Self.sides.filter { $0 != at }, id: \.self) { s in
+                        Button(L("把%@放到%@", name, side(s))) { place(s, 0) }
+                    }
+                }
+            // over both outlines, where the cursor crosses
+            if free == nil {
+                let line = shared(at, placed)
+                Capsule().fill(Color(live ? Ink.celadon : Ink.ghost))
+                    .frame(width: line.width, height: line.height)
+                    .offset(x: line.minX, y: line.minY)
+                    .allowsHitTesting(false)
+            }
             Text(L("拖动屏幕，放到它在桌上的位置"))
                 .font(.system(size: 11)).foregroundStyle(Color(Ink.faint))
-                .frame(width: 400)
-                .offset(y: 190)
+                .frame(width: Self.width)
+                .offset(y: 194)
         }
-        .frame(width: 400, height: 214, alignment: .topLeading)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: edge)
+        .frame(width: Self.width, height: 214, alignment: .topLeading)
+        .onChange(of: edge) { pending = nil }
+        .onChange(of: offset) { pending = nil }
     }
+}
 
-    private var smokeStart: CGPoint {
-        switch edge {
-        case "left": CGPoint(x: mac.minX - 2, y: mac.midY - 6)
-        case "right": CGPoint(x: mac.maxX + 2, y: mac.midY - 6)
-        default: CGPoint(x: mac.midX, y: mac.minY - 2)
+/// Below the Mac: hatched, with a word saying the screen cannot go there (RULES.md L9).
+struct NoGo: View {
+    var body: some View {
+        ZStack {
+            Canvas { ctx, size in
+                var p = Path()
+                var x: CGFloat = -size.height
+                while x < size.width {
+                    p.move(to: CGPoint(x: x, y: size.height)); p.addLine(to: CGPoint(x: x + size.height, y: 0))
+                    x += 7
+                }
+                ctx.stroke(p, with: .color(Color(Ink.rule)), lineWidth: 1)
+            }
+            Text(L("下方放不了")).font(.system(size: 11)).foregroundStyle(Color(Ink.faint))
+                .padding(.horizontal, 6).background(Color(Ink.paper))
         }
-    }
-
-    private func smokeEnd(_ r: CGRect) -> CGPoint {
-        switch edge {
-        case "left": CGPoint(x: r.maxX + 4, y: r.midY + 4)
-        case "right": CGPoint(x: r.minX - 4, y: r.midY + 4)
-        default: CGPoint(x: r.midX, y: r.maxY + 6)
-        }
-    }
-
-    private func nearest(_ r: CGRect) -> String {
-        Self.slots.min { a, b in
-            hypot(a.value.midX - r.midX, a.value.midY - r.midY) < hypot(b.value.midX - r.midX, b.value.midY - r.midY)
-        }!.key
+        .accessibilityHidden(true)
     }
 }
 
@@ -915,16 +1009,18 @@ struct LineScreen: View {
     }
 }
 
-/// A laptop in one line: the lid, then the base below it.
+/// A laptop in one line: the lid, then the base below it. The lid fills the frame
+/// but 14 on each side and 12 below, where the base goes.
 struct LineMac: View {
     var body: some View {
         Canvas { ctx, size in
-            let lid = CGRect(x: 14, y: 0, width: 80, height: 50)
+            let lid = CGRect(x: 14, y: 0, width: size.width - 28, height: size.height - 12)
             ctx.fill(Path(roundedRect: lid, cornerRadius: 3), with: .color(Color(Ink.sheet)))
             ctx.stroke(Path(roundedRect: lid, cornerRadius: 3), with: .color(Color(Ink.text)), lineWidth: 1.2)
             var base = Path()
-            base.move(to: CGPoint(x: 0, y: 54)); base.addLine(to: CGPoint(x: 108, y: 54))
-            base.addLine(to: CGPoint(x: 100, y: 60)); base.addLine(to: CGPoint(x: 8, y: 60)); base.closeSubpath()
+            let y = lid.maxY + 4
+            base.move(to: CGPoint(x: 0, y: y)); base.addLine(to: CGPoint(x: size.width, y: y))
+            base.addLine(to: CGPoint(x: size.width - 8, y: y + 6)); base.addLine(to: CGPoint(x: 8, y: y + 6)); base.closeSubpath()
             ctx.stroke(base, with: .color(Color(Ink.text)), lineWidth: 1.2)
         }
         .accessibilityHidden(true)

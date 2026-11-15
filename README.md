@@ -12,7 +12,7 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 
 ## Features
 
-- **Edge switching**: move the cursor past the edge of the Mac's screen to control Windows; the other screen can be above, left or right of the Mac
+- **Edge switching**: move the cursor past the edge of the Mac's screen to control Windows; the other screen can sit above, left or right of the Mac, shifted anywhere along that side, lined up the way macOS lines up its own displays (by scaled size)
 - **Keyboard mapping**: keys map by physical position, ⌘ becomes Ctrl, pinch-to-zoom becomes Ctrl + scroll; the volume and playback keys on the top row work on Windows as usual, and Mission Control and Spotlight open Windows' Task View and Search; held keys are released when you switch
 - **Clipboard sync**: plain text both ways, up to 1 MB, skipping anything a password manager marks as sensitive
 - **Pairing and encryption**: automatic discovery on the local network, pairing with a 6-digit code (SPAKE2), traffic encrypted with ChaCha20-Poly1305

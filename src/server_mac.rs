@@ -8,7 +8,7 @@
 use crate::control::{self, Live};
 use crate::discovery;
 use crate::keymap::{self, Change, SystemKey};
-use crate::logic::capture::{self, Hop, Pinch, Rect, Switcher};
+use crate::logic::capture::{self, Hop, Pinch, Rect, Remote, Switcher};
 use crate::logic::drop::Drop;
 use crate::pasteboard_mac::{self as pasteboard, Job};
 use crate::proto::{self, Msg};
@@ -173,6 +173,11 @@ const HID_TYPE_ZOOM: i64 = 8;
 const PHASE_ENDED: i64 = 8;
 const PHASE_CANCELLED: i64 = 16;
 
+/// Pixels per point for a Windows DPI (96 = 100%); a nonsense value counts as 100%.
+fn scale_of(dpi: u16) -> f64 {
+    if (48..=480).contains(&dpi) { dpi as f64 / 96.0 } else { 1.0 }
+}
+
 #[derive(Clone)]
 struct Link {
     id: u64,
@@ -180,6 +185,8 @@ struct Link {
     tx: proto::Queue,
     w: f64,
     h: f64,
+    /// pixels per point on the Windows screen (1.25 at 125%)
+    scale: f64,
     /// the connection itself, so unpairing can cut it
     closer: Arc<TcpStream>,
 }
@@ -295,7 +302,7 @@ pub fn run(opts: Options) -> io::Result<()> {
             let (describe_link, drop) = (link.clone(), link.clone());
             let hooks = control::Link {
                 describe: Box::new(move || match &*describe_link.lock().unwrap() {
-                    Some(l) => format!("state=connected\tpeer={}\tscreen={}x{}", l.peer, l.w, l.h),
+                    Some(l) => format!("state=connected\tpeer={}\tscreen={}x{}\tscale={}", l.peer, l.w, l.h, l.scale),
                     None => "state=waiting".to_string(),
                 }),
                 drop: Box::new(move || drop_link(&drop)),
@@ -658,14 +665,16 @@ impl Tap {
         let p = unsafe { CGEventGetLocation(ev) };
         let (display, link) = (self.display, &self.link);
         let mut target = None;
+        let settings = self.live.settings();
         let hop = self.switcher.local_move(
-            self.live.settings().edge,
+            settings.edge,
+            settings.offset,
             (p.x, p.y),
             (field(ev, DELTA_X) as f64, field(ev, DELTA_Y) as f64),
             || display_bounds(display),
             || {
                 target = link.lock().unwrap().clone();
-                target.as_ref().map(|l| (l.w, l.h))
+                target.as_ref().map(|l| Remote { w: l.w, h: l.h, scale: l.scale })
             },
         );
         let (Hop::Enter { x, y }, Some(link)) = (hop, target) else { return };
@@ -937,21 +946,22 @@ fn serve_client(
     let (tx, mut rx) = proto::handshake(stream, &psk, true)?;
     // the first frame decrypting proves the client knows the password;
     // only then does it get a writer thread and a place as the active link
-    let Msg::Info { w, h } = rx.recv()? else {
+    let Msg::Info { w, h, dpi } = rx.recv()? else {
         return Err(io::Error::other("expected screen info"));
     };
-    log!("wisp: {peer} connected, screen {w}×{h}");
+    log!("wisp: {peer} connected, screen {w}×{h} at {}%", dpi as u32 * 100 / 96);
     let tx = tx.spawn();
     let _ = tx.send(Msg::Name(name.to_string()));
-    *link.lock().unwrap() = Some(Link { id, peer: peer.to_string(), tx, w: w as f64, h: h as f64, closer });
+    *link.lock().unwrap() = Some(Link { id, peer: peer.to_string(), tx, w: w as f64, h: h as f64, scale: scale_of(dpi), closer });
     #[cfg(feature = "bridge")]
     crate::bridge_mac::on_connect();
 
     Err(rx.run(|msg| match msg {
-        Msg::Info { w, h } => {
+        Msg::Info { w, h, dpi } => {
             if let Some(l) = current(&mut link.lock().unwrap(), id) {
                 l.w = w as f64;
                 l.h = h as f64;
+                l.scale = scale_of(dpi);
             }
         }
         Msg::Clipboard(text) => {

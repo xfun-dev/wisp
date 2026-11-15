@@ -31,10 +31,15 @@ impl Edge {
 
 pub const SPEED: RangeInclusive<f64> = 0.2..=5.0;
 pub const SCROLL: RangeInclusive<f64> = 0.5..=10.0;
+/// points; far wider than any real arrangement, which the switcher clamps anyway
+pub const OFFSET: RangeInclusive<f64> = -20000.0..=20000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     pub edge: Edge,
+    /// how far the other screen's centre sits past the centre of `edge`, in this
+    /// screen's points: right along the top edge, down along a side (RULES.md L1)
+    pub offset: f64,
     /// local motion to remote pixels
     pub speed: f64,
     /// trackpad scroll points to wheel units
@@ -43,7 +48,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { edge: Edge::Top, speed: 1.0, scroll: 3.0 }
+        Settings { edge: Edge::Top, offset: 0.0, speed: 1.0, scroll: 3.0 }
     }
 }
 
@@ -59,6 +64,7 @@ impl Settings {
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
         match key {
             "edge" => self.edge = Edge::parse(value).ok_or(tr(T::SetEdge))?,
+            "offset" => self.offset = number(value, &OFFSET, tr(T::Position))?.round(),
             "speed" => self.speed = number(value, &SPEED, tr(T::MouseSpeed))?,
             "scroll" => self.scroll = number(value, &SCROLL, tr(T::ScrollSpeed))?,
             _ => return Err(trf(T::SetUnknown, &[&key])),
@@ -78,7 +84,7 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
-        format!("edge = {}\nspeed = {}\nscroll = {}\n", self.edge.name(), self.speed, self.scroll)
+        format!("edge = {}\noffset = {}\nspeed = {}\nscroll = {}\n", self.edge.name(), self.offset, self.speed, self.scroll)
     }
 }
 
@@ -92,17 +98,21 @@ mod tests {
         s.set("edge", "left").unwrap();
         s.set("speed", "1.5").unwrap();
         s.set("scroll", "0.5").unwrap();
+        s.set("offset", "-120.4").unwrap();
+        assert_eq!(s.offset, -120.0, "whole points");
         assert_eq!(Settings::parse(&s.to_text()), s, "file round trip");
 
         assert!(s.set("speed", "9").is_err(), "out of range");
         assert!(s.set("speed", "fast").is_err(), "not a number");
         assert!(s.set("edge", "diagonal").is_err());
         assert!(s.set("volume", "11").is_err(), "unknown key");
+        assert!(s.set("offset", "1e9").is_err(), "offset out of range");
         assert_eq!(s.speed, 1.5, "a refused change leaves the value alone");
 
         let messy = "# hand edited\nspeed = 2\nedge=right\nscroll = 99\nnonsense\n";
-        assert_eq!(Settings::parse(messy), Settings { edge: Edge::Right, speed: 2.0, scroll: 3.0 });
+        assert_eq!(Settings::parse(messy), Settings { edge: Edge::Right, offset: 0.0, speed: 2.0, scroll: 3.0 });
         assert_eq!(Settings::parse("edge = bottom\n").edge, Edge::Top, "the retired bottom edge falls back to top");
         assert_eq!(Settings::parse(""), Settings::default());
+        assert_eq!(Settings::parse("edge = left\n").offset, 0.0, "a file from before free placement is centred");
     }
 }

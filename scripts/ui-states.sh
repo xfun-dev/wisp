@@ -24,6 +24,9 @@ struct Render {
         let states: [(String, String?, String?)] = [
             ("connected", "\(base)\tstate=connected\tpeer=192.168.1.12:50000\tscreen=2560x1440\tpaired=FANG\tpairing=", nil),
             ("connected-left", "\(base.replacingOccurrences(of: "edge=top", with: "edge=left"))\tstate=connected\tpeer=192.168.1.12:50000\tscreen=2560x1440\tpaired=FANG\tpairing=", nil),
+            ("placed-top-125", "\(base.replacingOccurrences(of: "\tbridge=1", with: ""))\tstate=connected\tpeer=192.168.1.12:50000\tscreen=2560x1440\tscale=1.25\toffset=600\tpaired=FANG\tpairing=", nil),
+            ("placed-left-up", "\(base)\tedge=left\toffset=-400\tstate=connected\tpeer=192.168.1.12:50000\tscreen=2560x1440\tscale=1.25\tpaired=FANG\tpairing=", nil),
+            ("placed-right-small", "\(base)\tedge=right\toffset=300\tstate=connected\tpeer=192.168.1.12:50000\tscreen=1280x720\tscale=1\tpaired=FANG\tpairing=", nil),
             ("paused", "\(base.replacingOccurrences(of: "paused=false", with: "paused=true"))\tstate=connected\tpeer=192.168.1.12:50000\tscreen=2560x1440\tpaired=FANG\tpairing=", nil),
             ("searching", "\(base)\tstate=waiting\tpaired=FANG\tpairing=\tdrop=\(now - 150):slept", nil),
             ("unpaired", "\(base)\tstate=waiting\tpaired=\tpairing=", nil),

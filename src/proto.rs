@@ -45,8 +45,10 @@ const READ_TIMEOUT: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Msg {
-    /// client -> server: client screen size in pixels
-    Info { w: u16, h: u16 },
+    /// client -> server: client screen size in pixels and its DPI (96 = 100%).
+    /// The DPI was added after version 4 shipped, as two trailing bytes an older
+    /// server ignores; from an older client it is missing and read as 96.
+    Info { w: u16, h: u16, dpi: u16 },
     /// keepalive, both directions
     Ping,
     /// server -> client: cursor now lives on the client
@@ -80,10 +82,11 @@ impl Msg {
             n += b.len();
         };
         match *self {
-            Msg::Info { w, h } => {
+            Msg::Info { w, h, dpi } => {
                 put(&[1]);
                 put(&w.to_le_bytes());
                 put(&h.to_le_bytes());
+                put(&dpi.to_le_bytes());
             }
             Msg::Ping => put(&[2]),
             Msg::Enter => put(&[3]),
@@ -137,7 +140,7 @@ impl Msg {
         let u16_at = |i: usize| Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?));
         let i32_at = |i: usize| Some(i32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?));
         Some(match *b.first()? {
-            1 => Msg::Info { w: u16_at(1)?, h: u16_at(3)? },
+            1 => Msg::Info { w: u16_at(1)?, h: u16_at(3)?, dpi: u16_at(5).unwrap_or(96) },
             2 => Msg::Ping,
             3 => Msg::Enter,
             4 => Msg::Leave,
@@ -355,7 +358,7 @@ mod tests {
     #[test]
     fn every_message_roundtrips() {
         let all = [
-            Msg::Info { w: 2560, h: 1440 },
+            Msg::Info { w: 2560, h: 1440, dpi: 120 },
             Msg::Ping,
             Msg::Enter,
             Msg::Leave,
@@ -370,6 +373,12 @@ mod tests {
             let n = m.encode_small(&mut buf);
             assert_eq!(Msg::decode_small(&buf[..n]), Some(m));
         }
+    }
+
+    #[test]
+    fn screen_info_without_a_dpi_reads_as_100_percent() {
+        // what a client from before the DPI field sends
+        assert_eq!(Msg::decode_small(&[1, 0, 10, 160, 5]), Some(Msg::Info { w: 2560, h: 1440, dpi: 96 }));
     }
 
     #[test]
@@ -389,7 +398,7 @@ mod tests {
         let t = std::thread::spawn(move || {
             let (s, _) = l.accept().unwrap();
             let (tx, mut rx) = handshake(s, &key, true).unwrap();
-            assert_eq!(rx.recv().unwrap(), Msg::Info { w: 2560, h: 1440 });
+            assert_eq!(rx.recv().unwrap(), Msg::Info { w: 2560, h: 1440, dpi: 120 });
             let tx = tx.spawn();
             tx.send(Msg::Key { scan: 0xE04B, down: true }).unwrap();
             tx.send(Msg::Wheel { dx: -3, dy: 240 }).unwrap();
@@ -404,7 +413,7 @@ mod tests {
             assert_eq!(rx.recv().unwrap(), Msg::Ping);
         });
         let (tx, mut rx) = handshake(TcpStream::connect(addr).unwrap(), &key, false).unwrap();
-        tx.spawn().send(Msg::Info { w: 2560, h: 1440 }).unwrap();
+        tx.spawn().send(Msg::Info { w: 2560, h: 1440, dpi: 120 }).unwrap();
         assert_eq!(rx.recv().unwrap(), Msg::Key { scan: 0xE04B, down: true });
         assert_eq!(rx.recv().unwrap(), Msg::Wheel { dx: -3, dy: 240 });
         assert_eq!(rx.recv().unwrap(), Msg::Zoom { steps: -2 });

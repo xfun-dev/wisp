@@ -54,6 +54,7 @@ extern "system" {
     fn SendInput(n: u32, inputs: *const Input, size: i32) -> u32;
     fn GetSystemMetrics(index: i32) -> i32;
     fn SetProcessDPIAware() -> i32;
+    fn GetDpiForSystem() -> u32;
 }
 
 #[link(name = "kernel32")]
@@ -346,9 +347,10 @@ fn session(
     let (tx, rx) = proto::handshake(stream, &finder.psk, false)?;
     let queue = tx.spawn();
     queue
-        .send(Msg::Info { w: inj.w as u16, h: inj.h as u16 })
+        // the Mac lays the screens out in points, as macOS does (RULES.md L1)
+        .send(Msg::Info { w: inj.w as u16, h: inj.h as u16, dpi: unsafe { GetDpiForSystem() } as u16 })
         .map_err(|_| io::Error::other(tr(T::HandshakeDropped)))?;
-    log!("wisp: connected to {addr}, this screen {}×{}", inj.w, inj.h);
+    log!("wisp: connected to {addr}, this screen {}×{} at {}%", inj.w, inj.h, unsafe { GetDpiForSystem() } * 100 / 96);
     let mut status = Status { connected: true, peer: addr.to_string(), since: now(), ..Status::default() };
     #[cfg(feature = "bridge")]
     crate::bridge_win::reset();

@@ -53,7 +53,8 @@ pub fn read_token(dir: &Path) -> io::Result<String> {
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Status,
-    Set(String, String),
+    /// one or more `key=value` changes, applied together or not at all
+    Set(Vec<(String, String)>),
     Pause,
     Resume,
     /// stop wisp; launchd only restarts it after a crash, so it stays stopped (RULES.md U11)
@@ -114,7 +115,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
             let (a, b) = (path(a)?, path(b)?);
             Ok(if *op == "bridge-put" { Command::BridgePut(a, b) } else { Command::BridgeGet(a, b) })
         }
-        ["set", kv] => kv.split_once('=').map(|(k, v)| Command::Set(k.into(), v.into())).ok_or("usage: set <setting>=<value>".into()),
+        ["set", kvs @ ..] if !kvs.is_empty() => kvs
+            .iter()
+            .map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+            .collect::<Option<Vec<_>>>()
+            .map(Command::Set)
+            .ok_or("usage: set <setting>=<value> ...".into()),
         _ => Err(format!("unknown command: {}", line.trim())),
     }
 }
@@ -196,10 +202,12 @@ impl Live {
 
     fn apply(&self, cmd: Command, drop_link: &dyn Fn()) -> Result<String, String> {
         match cmd {
-            Command::Set(key, value) => {
+            Command::Set(changes) => {
                 // the event thread reads settings on every move: never hold the lock over disk I/O
                 let mut next = self.settings();
-                next.set(&key, &value)?;
+                for (key, value) in &changes {
+                    next.set(key, value)?;
+                }
                 save(&self.dir.join("config"), &next.to_text()).map_err(|e| trf(T::SaveFailed, &[&e]))?;
                 *self.settings.lock().unwrap() = next;
             }
@@ -238,9 +246,10 @@ impl Live {
             None => (String::new(), 0, 0),
         };
         format!(
-            "{connection}\tpaused={}\tedge={}\tspeed={}\tscroll={}\tpaired={paired}\tpairing={code}\tpair_left={left}\tpair_tries={tries}{}{}",
+            "{connection}\tpaused={}\tedge={}\toffset={}\tspeed={}\tscroll={}\tpaired={paired}\tpairing={code}\tpair_left={left}\tpair_tries={tries}{}{}",
             self.paused(),
             s.edge.name(),
+            s.offset,
             s.speed,
             s.scroll,
             self.drop_field(),
@@ -351,9 +360,13 @@ mod tests {
         assert_eq!(parse("unpair"), Ok(Command::Unpair));
         assert_eq!(parse("debug-stall 3000"), Ok(Command::DebugStall(3000)));
         assert!(parse("debug-stall soon").is_err());
-        assert_eq!(parse("set speed=1.5"), Ok(Command::Set("speed".into(), "1.5".into())));
+        assert_eq!(parse("set speed=1.5"), Ok(Command::Set(vec![("speed".into(), "1.5".into())])));
+        assert_eq!(
+            parse("set edge=left offset=-40"),
+            Ok(Command::Set(vec![("edge".into(), "left".into()), ("offset".into(), "-40".into())]))
+        );
         assert!(parse("set speed").is_err());
-        assert!(parse("set a=1 b=2").is_err());
+        assert!(parse("set").is_err());
         assert!(parse("reboot").is_err());
         assert!(parse("").is_err());
     }
@@ -396,7 +409,7 @@ mod tests {
         assert_eq!(request("secret", port, "pause").unwrap(), "ok");
         assert!(request("secret", port, "set speed=99").unwrap().starts_with("error 鼠标速度"));
         let status = request("secret", port, "status").unwrap();
-        let fields = "ok\tstate=waiting\tpaused=true\tedge=left\tspeed=1\tscroll=3\tpaired=\tpairing=\tpair_left=0\tpair_tries=0";
+        let fields = "ok\tstate=waiting\tpaused=true\tedge=left\toffset=0\tspeed=1\tscroll=3\tpaired=\tpairing=\tpair_left=0\tpair_tries=0";
         // a build with the developer bridge adds `\tbridge=1` or `0` (RULES.md X1)
         assert!(status == fields || status.strip_prefix(fields).is_some_and(|rest| rest.starts_with("\tbridge=")), "{status}");
 
