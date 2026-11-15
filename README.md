@@ -17,7 +17,8 @@ Use your Mac's trackpad and keyboard on a Windows PC.
 - **Clipboard sync**: plain text both ways, up to 1 MB, skipping anything a password manager marks as sensitive
 - **Pairing and encryption**: automatic discovery on the local network, pairing with a 6-digit code (SPAKE2), traffic encrypted with ChaCha20-Poly1305
 - **Lightweight**: about 3 MB of memory on the Mac and 2 MB on Windows; written in Rust, no runtime
-- **Lock screen and UAC**: optionally (from the tray menu, one administrator approval), the Mac can also type on the Windows lock screen and sign-in screen and click UAC prompts, so the PC needs no keyboard or mouse of its own
+- **Lock screen and UAC**: optionally (a switch in the Windows window or tray menu, one administrator approval), the Mac can also type on the Windows lock screen and sign-in screen and click UAC prompts, so the PC needs no keyboard or mouse of its own
+- **Clear status**: both windows show what is going on at a glance and follow light and dark mode; when the PC can't be found, the Mac lists what it checked and why the last connection ended
 - **Failsafe**: if the background process stalls for more than 1.5 s, a watchdog hands the keyboard and mouse back to the Mac
 
 <table>
@@ -35,11 +36,11 @@ Download from [Releases](https://github.com/xfun-dev/wisp/releases/latest). The 
 
 **Mac** (macOS 14+, Apple silicon and Intel)
 1. Open `Wisp-<version>.dmg` and drag Wisp into Applications
-2. Open Wisp. If macOS says it can't verify the developer, click "Open Anyway" in System Settings → Privacy & Security
+2. Open Wisp. If macOS says it can't verify the developer, click "Open Anyway" in System Settings → Privacy & Security (Wisp is not code-signed)
 3. Allow `wisp` in System Settings → Privacy & Security → Accessibility
 
 **Windows** (Windows 10/11)
-1. Double-click `Wisp-<version>.exe`; it installs itself and opens the status window
+1. Double-click `Wisp-<version>.exe`; it installs itself and opens the status window. If "Windows protected your PC" appears, click "More info" → "Run anyway" (Wisp is not code-signed)
 
 **Pairing**: in Wisp on the Mac, click "配对新电脑" (pair a new computer) and type the 6 digits into the Windows status window. Once paired, the two connect on their own at startup.
 
