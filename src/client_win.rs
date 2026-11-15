@@ -100,7 +100,7 @@ pub fn pair(code: &str, port: u16) -> io::Result<String> {
 /// The status file as the client last wrote it.
 pub fn read_status() -> Option<String> {
     let mut files = vec![status_file()];
-    // the status window, the installer: the service's client writes under ProgramData
+    // the status window, the installer: the service's client writes to Program Files\Wisp\state
     // (W2); whichever file was written last is the client running now
     if !is_system() && std::env::var_os("WISP_STATE").is_none() {
         files.push(crate::service_win::state_dir().join("status"));

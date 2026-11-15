@@ -77,6 +77,7 @@ extern "C" {
     fn CGSetLocalEventsSuppressionInterval(seconds: f64) -> i32;
     fn _CGSDefaultConnection() -> i32;
     fn CGSSetConnectionProperty(cid: i32, target: i32, key: CFStringRef, value: CFTypeRef) -> i32;
+    fn CGSessionCopyCurrentDictionary() -> CFTypeRef;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -90,6 +91,9 @@ extern "C" {
     fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: CFStringRef);
     fn CFRunLoopRun();
     fn CFAbsoluteTimeGetCurrent() -> f64;
+    fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
+    fn CFNumberGetValue(number: CFTypeRef, kind: isize, out: *mut c_void) -> bool;
+    fn CFRelease(cf: CFTypeRef);
     fn CFRunLoopTimerCreate(
         alloc: CFTypeRef,
         fire: f64,
@@ -110,6 +114,10 @@ extern "C" {
         key_cb: *const Opaque,
         value_cb: *const Opaque,
     ) -> CFTypeRef;
+}
+
+extern "C" {
+    fn proc_name(pid: i32, buf: *mut u8, size: u32) -> i32;
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -244,6 +252,8 @@ struct Tap {
     thaw_reported: bool,
     pinch: Pinch,
     clipboard: mpsc::Sender<Job>,
+    /// a hop was refused for Secure Event Input and logged; cleared once a hop goes through
+    secure_noted: bool,
 }
 
 pub struct Options {
@@ -335,6 +345,7 @@ pub fn run(opts: Options) -> io::Result<()> {
         frozen: CGPoint { x: 0.0, y: 0.0 },
         thaw_reported: false,
         pinch: Pinch::default(),
+        secure_noted: false,
     }));
 
     let grab_mask = [
@@ -441,6 +452,15 @@ extern "C" fn on_beat(_timer: *mut c_void, info: *mut c_void) {
     if RESCUED.swap(false, Ordering::SeqCst) {
         tap.release(None, false);
     }
+    // locked, or secure input, while Windows has control: back to the Mac (RULES.md L10)
+    if REMOTE.load(Ordering::SeqCst) && tap.active.is_some() {
+        if let Some(pid) = secure_input() {
+            log!("wisp: Mac 已锁屏或有程序开启了安全输入（{}），键盘无法转发，光标回到 Mac", process_name(pid));
+            tap.secure_noted = true;
+            let at = tap.frozen;
+            tap.go_local(Some(at));
+        }
+    }
     let stall = STALL_MS.swap(0, Ordering::Relaxed);
     if stall > 0 {
         log!("wisp: 测试：主线程暂停 {stall}ms");
@@ -544,6 +564,40 @@ fn field(ev: CGEventRef, f: u32) -> i64 {
     unsafe { CGEventGetIntegerValueField(ev, f) }
 }
 
+/// The process holding Secure Event Input, or None when nobody does (RULES.md L10).
+/// While the Mac is locked, or any app (a password field, Terminal's Secure Keyboard
+/// Entry) holds it, macOS hands keystrokes to that process alone, never to an event
+/// tap: the mouse could still reach Windows but the keyboard could not. One query of
+/// the session dictionary, made only on a hop and on the remote heartbeat.
+fn secure_input() -> Option<i32> {
+    static KEY: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+    unsafe {
+        let mut key = KEY.load(Ordering::Relaxed) as CFTypeRef;
+        if key.is_null() {
+            key = CFStringCreateWithCString(ptr::null(), b"kCGSSessionSecureInputPID\0".as_ptr(), 0x0800_0100);
+            KEY.store(key as *mut c_void, Ordering::Relaxed);
+        }
+        let session = CGSessionCopyCurrentDictionary();
+        if session.is_null() {
+            return None;
+        }
+        let value = CFDictionaryGetValue(session, key);
+        let mut pid: i32 = 0;
+        // kCFNumberSInt32Type
+        let held = !value.is_null() && CFNumberGetValue(value, 3, &mut pid as *mut i32 as *mut c_void);
+        CFRelease(session);
+        held.then_some(pid)
+    }
+}
+
+/// "loginwindow (pid 123)" for the log.
+fn process_name(pid: i32) -> String {
+    let mut buf = [0u8; 64];
+    let n = unsafe { proc_name(pid, buf.as_mut_ptr(), buf.len() as u32) };
+    let name = String::from_utf8_lossy(&buf[..n.max(0) as usize]).into_owned();
+    format!("{} (pid {pid})", if name.is_empty() { "?" } else { &name })
+}
+
 fn display_bounds(display: u32) -> Rect {
     let b = unsafe { CGDisplayBounds(display) };
     Rect { x: b.x, y: b.y, w: b.w, h: b.h }
@@ -614,6 +668,16 @@ impl Tap {
             },
         );
         let (Hop::Enter { x, y }, Some(link)) = (hop, target) else { return };
+        // the keyboard could not follow: the cursor stays on the Mac (RULES.md L10)
+        if let Some(pid) = secure_input() {
+            if !self.secure_noted {
+                self.secure_noted = true;
+                log!("wisp: Mac 已锁屏或有程序开启了安全输入（{}），键盘无法转发，暂不切到 Windows", process_name(pid));
+            }
+            self.switcher.reset();
+            return;
+        }
+        self.secure_noted = false;
         // never block the event tap: a full queue means the link is stuck, same as gone
         if link.tx.try_send(Msg::Enter).is_err() || link.tx.try_send(Msg::MouseAbs { x, y }).is_err() {
             self.switcher.reset();

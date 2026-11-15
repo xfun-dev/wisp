@@ -72,10 +72,10 @@ win=$(print -r -- "$raw" | grep -Eo '^[0-9]+' | head -1 || true)
 # (a thread, a pipe, the output buffer): allow for that, and only for that (RULES.md R1)
 budget=$WIN_BUDGET_KB
 [[ ${BRIDGE[*]} == *" win"* ]] && budget=$(( WIN_BUDGET_KB + 128 ))
-(( win <= budget )) || fail "Windows private memory ${win} KB > ${budget} KB"
+(( win <= budget )) || fail "Windows private memory ${win} KB > ${budget} KB (a developer build that has moved files over the bridge sits near 2.6 MB until restarted, RULES.md R1: restart its client and measure again)"
 pass "Windows private memory ${win} KB (budget ${budget})"
 
-# the newer of the two: WispService's client writes under ProgramData (RULES.md W2)
-win_status=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "$f = Get-Item $env:LOCALAPPDATA\Wisp\status, $env:ProgramData\Wisp\status -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1; if ($f) { Get-Content -Encoding UTF8 $f.FullName }"' --timeout 30 2>&1) || true
+# the newer of the two: WispService's client writes to Program Files\Wisp\state (RULES.md W2)
+win_status=$("${BRIDGE[@]}" exec 'powershell -NoProfile -Command "$f = Get-Item $env:LOCALAPPDATA\Wisp\status, $env:ProgramFiles\Wisp\state\status -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1; if ($f) { Get-Content -Encoding UTF8 $f.FullName }"' --timeout 30 2>&1) || true
 [[ $win_status == *state=connected* ]] || fail "Windows status file does not say connected: $win_status"
 pass "Windows status file says connected"
