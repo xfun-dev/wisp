@@ -3,6 +3,8 @@
 
 #[cfg(any(test, target_os = "macos"))]
 pub mod capture;
+#[cfg(any(test, target_os = "macos"))]
+pub mod drop;
 #[cfg(any(test, feature = "bridge"))]
 pub mod bridge;
 pub mod clipboard;

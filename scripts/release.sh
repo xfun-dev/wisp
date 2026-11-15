@@ -38,7 +38,7 @@ release_set() {
   lipo -create -output $app/Contents/MacOS/Wisp dist/Wisp-arm64 dist/Wisp-x86_64
   lipo -create -output $app/Contents/Helpers/WispMenu dist/WispMenu-arm64 dist/WispMenu-x86_64
   sed -e "s#<key>CFBundleShortVersionString</key><string>[^<]*</string>#<key>CFBundleShortVersionString</key><string>$version</string>#" ui/mac/Info.plist > $app/Contents/Info.plist
-  cp ui/mac/AppIcon.icns ui/mac/fonts/* $app/Contents/Resources/
+  cp ui/mac/AppIcon.icns $app/Contents/Resources/
   codesign --force -s "$SIGN_ID" -i "$LABEL" $app/Contents/Helpers/wisp
   codesign --force -s "$SIGN_ID" -i "$LABEL.menu" $app/Contents/Helpers/WispMenu
   codesign --force -s "$SIGN_ID" $app

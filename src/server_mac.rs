@@ -9,6 +9,7 @@ use crate::control::{self, Live};
 use crate::discovery;
 use crate::keymap::{self, Change, SystemKey};
 use crate::logic::capture::{self, Hop, Pinch, Rect, Switcher};
+use crate::logic::drop::Drop;
 use crate::pasteboard_mac::{self as pasteboard, Job};
 use crate::proto::{self, Msg};
 use std::ffi::c_void;
@@ -905,11 +906,16 @@ fn accept_loop(
                 log!("wisp: 还没有配对，不接受 {peer} 的连接");
                 return;
             };
+            let (wall, awake) = (control::now(), Instant::now());
             let Err(e) = serve_client(stream, &peer, &link, &clipboard, &name, paired.key, id);
             log!("wisp: {peer} 断开：{e}");
             let mut l = link.lock().unwrap();
             if current(&mut l, id).is_some() {
                 *l = None;
+                // the link the settings window was showing ended: say why (RULES.md U13)
+                let timed_out = matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut);
+                let why = Drop::classify(timed_out, control::now().saturating_sub(wall), awake.elapsed().as_secs());
+                live.set_drop(control::now(), why);
             }
             // even when a newer link already took its place: requests sent over this one
             // will never be answered, and must not wait out their timeout (RULES.md X3)

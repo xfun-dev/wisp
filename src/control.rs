@@ -126,6 +126,9 @@ pub struct Live {
     paired: Mutex<Option<Paired>>,
     /// the open invitation, if any; `pair::host` consumes it
     pub pairing: Mutex<Option<Window>>,
+    /// when and why the last link ended, while no link replaced it (RULES.md U13)
+    #[cfg(target_os = "macos")]
+    last_drop: Mutex<Option<(u64, crate::logic::drop::Drop)>>,
     dir: PathBuf,
 }
 
@@ -138,8 +141,25 @@ impl Live {
             paused: AtomicBool::new(false),
             paired: Mutex::new(read("pair").and_then(|t| Paired::parse(&t))),
             pairing: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            last_drop: Mutex::new(None),
             dir,
         }
+    }
+
+    /// The link just ended for this reason (RULES.md U13).
+    #[cfg(target_os = "macos")]
+    pub fn set_drop(&self, at: u64, why: crate::logic::drop::Drop) {
+        *self.last_drop.lock().unwrap() = Some((at, why));
+    }
+
+    /// `\tdrop=<unix>:<word>` once a link has ended, nothing before.
+    fn drop_field(&self) -> String {
+        #[cfg(target_os = "macos")]
+        if let Some((at, why)) = *self.last_drop.lock().unwrap() {
+            return format!("\tdrop={at}:{}", why.word());
+        }
+        String::new()
     }
 
     pub fn settings(&self) -> Settings {
@@ -217,11 +237,12 @@ impl Live {
             None => (String::new(), 0, 0),
         };
         format!(
-            "{connection}\tpaused={}\tedge={}\tspeed={}\tscroll={}\tpaired={paired}\tpairing={code}\tpair_left={left}\tpair_tries={tries}{}",
+            "{connection}\tpaused={}\tedge={}\tspeed={}\tscroll={}\tpaired={paired}\tpairing={code}\tpair_left={left}\tpair_tries={tries}{}{}",
             self.paused(),
             s.edge.name(),
             s.speed,
             s.scroll,
+            self.drop_field(),
             bridge_field()
         )
     }

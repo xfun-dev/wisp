@@ -1,12 +1,13 @@
-//! `wisp.exe status`: the Windows status window (RULES.md U1, U5, P8, B4). Opened from
+//! `wisp.exe status`: the Windows status window (RULES.md U1, U5, P8, B5). Opened from
 //! the Start menu, it reads the client's status file once a second and quits when closed.
-//! It is the same desk as the Mac's settings window: this computer's screen on a monitor
-//! arm, the Mac below it, and a drawer whose carved tray shows how long they have been
-//! connected, or takes the Mac's pairing code. Pairing runs on a worker thread; the
-//! background client picks up the saved key on its own.
+//! It is the Mac window's paper and ink: what is going on, a line drawing of this
+//! computer above the Mac (or the Mac's pairing code being typed), the switch for the
+//! lock screen and UAC prompts (W1), and the ways out. Pairing runs on a worker thread;
+//! the background client picks up the saved key on its own.
 //!
-//! Drawing is GDI+ into a cached bitmap, redrawn only when something on it changes; a
-//! 20 fps timer repaints just the small moving parts (the wisp, the steam, the caret).
+//! Drawing is GDI+ into a cached bitmap, redrawn only when something on it changes.
+//! Nothing moves but the caret while a code is typed, so an open window costs no CPU.
+//! Light or dark follows the Windows app setting, title bar included.
 
 use crate::client_win::RUNNING_MUTEX;
 use crate::gdiplus_win::{self as gp, rgb, rgba, Align, Canvas, Font, Path};
@@ -18,7 +19,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 type Hdc = *mut c_void;
 
@@ -53,6 +54,7 @@ struct TrackMouse {
 extern "system" {
     fn PostQuitMessage(code: i32);
     fn SetTimer(hwnd: Hwnd, id: usize, ms: u32, func: *mut c_void) -> usize;
+    fn KillTimer(hwnd: Hwnd, id: usize) -> i32;
     fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: i32) -> i32;
     fn BeginPaint(hwnd: Hwnd, ps: *mut PaintStruct) -> Hdc;
     fn EndPaint(hwnd: Hwnd, ps: *const PaintStruct) -> i32;
@@ -68,7 +70,6 @@ extern "system" {
     fn TrackMouseEvent(track: *mut TrackMouse) -> i32;
     fn GetDC(hwnd: Hwnd) -> Hdc;
     fn ReleaseDC(hwnd: Hwnd, hdc: Hdc) -> i32;
-    fn IsIconic(hwnd: Hwnd) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -85,40 +86,23 @@ extern "system" {
 extern "system" {
     fn OpenMutexW(access: u32, inherit: i32, name: *const u16) -> *mut c_void;
     fn CloseHandle(handle: *mut c_void) -> i32;
-}
-
-#[link(name = "kernel32")]
-extern "system" {
     fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
 }
 
-type SetWindowAttribute = unsafe extern "system" fn(Hwnd, u32, *const c_void, u32) -> i32;
-
-/// Colours the title bar (Windows 11). dwmapi.dll is loaded here, not linked, so the
-/// background client, which shares this exe, never loads it (RULES.md R1).
-unsafe fn tint_title_bar(hwnd: Hwnd) {
-    // from System32 only, never a look-alike next to the exe
-    let dll = LoadLibraryExW(wide("dwmapi.dll").as_ptr(), ptr::null_mut(), 0x800);
-    if dll.is_null() {
-        return;
-    }
-    let f = GetProcAddress(dll, b"DwmSetWindowAttribute\0".as_ptr());
-    if f.is_null() {
-        return;
-    }
-    // SAFETY: DwmSetWindowAttribute has this signature
-    let set: SetWindowAttribute = std::mem::transmute(f);
-    let (caption, text) = (0x00D8E5EDu32, 0x0025374Au32);
-    set(hwnd, DWMWA_CAPTION_COLOR, &caption as *const u32 as *const c_void, 4);
-    set(hwnd, DWMWA_TEXT_COLOR, &text as *const u32 as *const c_void, 4);
+#[link(name = "advapi32")]
+extern "system" {
+    fn RegGetValueW(key: isize, sub: *const u16, value: *const u16, flags: u32, kind: *mut u32, data: *mut c_void, size: *mut u32) -> i32;
 }
+
+type SetWindowAttribute = unsafe extern "system" fn(Hwnd, u32, *const c_void, u32) -> i32;
 
 const WM_DESTROY: u32 = 0x0002;
 const WM_CLOSE: u32 = 0x0010;
 const WM_PAINT: u32 = 0x000F;
 const WM_ERASEBKGND: u32 = 0x0014;
 const WM_SETCURSOR: u32 = 0x0020;
+const WM_SETTINGCHANGE: u32 = 0x001A;
 const WM_CHAR: u32 = 0x0102;
 const WM_TIMER: u32 = 0x0113;
 const WM_MOUSEMOVE: u32 = 0x0200;
@@ -138,38 +122,105 @@ const SYNCHRONIZE: u32 = 0x0010_0000;
 const SRCCOPY: u32 = 0x00CC_0020;
 const TME_LEAVE: u32 = 0x0002;
 const HTCLIENT: isize = 1;
+const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
+const RRF_RT_REG_DWORD: u32 = 0x10;
+const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
 const DWMWA_CAPTION_COLOR: u32 = 35;
 const DWMWA_TEXT_COLOR: u32 = 36;
 const STYLE: u32 = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 const STATUS_TIMER: usize = 1;
-const FRAME_TIMER: usize = 2;
+const CARET_TIMER: usize = 2;
+/// how long the switch waits for the administrator's answer before showing the truth again
+const SERVICE_WAIT_SECS: u64 = 90;
 
 /// The client area in logical pixels, and where things sit in it.
-const W: f32 = 420.0;
-const H: f32 = 568.0;
-const SCENE_TOP: f32 = 42.0;
-const DRAWER: f32 = 344.0;
-const TRAY: (f32, f32, f32, f32) = (22.0, 368.0, 376.0, 124.0);
-const FOOT: f32 = 510.0;
-/// the desk drawing is in the Mac window's coordinates (RULES.md B4), shown from y = 38 down
-const SCENE_SCALE: f32 = 420.0 / 460.0;
+const W: f32 = 400.0;
+const H: f32 = 440.0;
+const PAD: f32 = 28.0;
+const MID: f32 = 128.0;
+const MID_H: f32 = 176.0;
+const ROW: f32 = MID + MID_H;
+const FOOT: f32 = H - 48.0;
+/// the primary button, right of the headline
+const BUTTON: (f32, f32, f32, f32) = (W - PAD - 100.0, 44.0, 100.0, 32.0);
+/// the lock-screen switch
+const SWITCH: (f32, f32, f32, f32) = (W - PAD - 40.0, ROW + 26.0, 40.0, 22.0);
 
-// the desk's colours, the same as the Mac's
-const WALL: u32 = 0xEDE5D8;
-const WOOD: u32 = 0xB8936A;
-const WOOD_BAND: u32 = 0xA88A66;
-const TRAY_FILL: u32 = 0xA47E54;
-const ENGRAVE: u32 = 0x6E4F2E;
-const CLAY: u32 = 0xF3E9DA;
-const CLAY_SHADE: u32 = 0xD9C7AE;
-const CLAY_DROP: u32 = 0x8D704F;
-const TEAL: u32 = 0x3FA69A;
-const TEAL_GLOW: u32 = 0x5FD6C6;
-const CREAM: u32 = 0xFFF7EC;
-const INK: u32 = 0x4A3725;
-const INK_SOFT: u32 = 0x8C7660;
-const AMBER: u32 = 0xD49A2A;
-const RED: u32 = 0xC0503A;
+/// Paper and ink, one set for each appearance (the Mac's, RULES.md B4).
+#[derive(Clone, Copy)]
+struct Ink {
+    paper: u32,
+    text: u32,
+    soft: u32,
+    faint: u32,
+    rule: u32,
+    ghost: u32,
+    sheet: u32,
+    celadon: u32,
+    ochre: u32,
+    rust: u32,
+}
+
+const LIGHT: Ink = Ink {
+    paper: 0xF3EFE6,
+    text: 0x23211D,
+    soft: 0x635E55,
+    faint: 0x8C867A,
+    rule: 0xDDD5C6,
+    ghost: 0xB9B1A1,
+    sheet: 0xF8F5EE,
+    celadon: 0x4E7068,
+    ochre: 0x8F6326,
+    rust: 0xA8452F,
+};
+
+const DARK: Ink = Ink {
+    paper: 0x1C1B19,
+    text: 0xE9E4DA,
+    soft: 0xA9A397,
+    faint: 0x7D776C,
+    rule: 0x34312C,
+    ghost: 0x4A463F,
+    sheet: 0x23211E,
+    celadon: 0x8DB3A8,
+    ochre: 0xD2A266,
+    rust: 0xE08A72,
+};
+
+/// Whether Windows apps are set to dark.
+fn dark_mode() -> bool {
+    let (key, value) = (wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"), wide("AppsUseLightTheme"));
+    let mut light = 1u32;
+    let mut size = 4u32;
+    let ok = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), value.as_ptr(), RRF_RT_REG_DWORD, ptr::null_mut(), &mut light as *mut u32 as *mut c_void, &mut size) } == 0;
+    ok && light == 0
+}
+
+/// 0xRRGGBB as a COLORREF (0x00BBGGRR).
+fn colorref(c: u32) -> u32 {
+    (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16 & 0xFF)
+}
+
+/// Colours the title bar paper (Windows 11; older versions ignore it). dwmapi.dll is
+/// loaded here, not linked, so the background client, which shares this exe, never
+/// loads it (RULES.md R1).
+unsafe fn tint_title_bar(hwnd: Hwnd, ink: &Ink, dark: bool) {
+    // from System32 only, never a look-alike next to the exe
+    let dll = LoadLibraryExW(wide("dwmapi.dll").as_ptr(), ptr::null_mut(), 0x800);
+    if dll.is_null() {
+        return;
+    }
+    let f = GetProcAddress(dll, b"DwmSetWindowAttribute\0".as_ptr());
+    if f.is_null() {
+        return;
+    }
+    // SAFETY: DwmSetWindowAttribute has this signature
+    let set: SetWindowAttribute = std::mem::transmute(f);
+    let (on, caption, text) = (dark as u32, colorref(ink.paper), colorref(ink.text));
+    set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &on as *const u32 as *const c_void, 4);
+    set(hwnd, DWMWA_CAPTION_COLOR, &caption as *const u32 as *const c_void, 4);
+    set(hwnd, DWMWA_TEXT_COLOR, &text as *const u32 as *const c_void, 4);
+}
 
 fn client_running() -> bool {
     let name = wide(RUNNING_MUTEX);
@@ -199,49 +250,45 @@ static PAIRED: Mutex<Option<Outcome>> = Mutex::new(None);
 /// Things that react to the pointer.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Hit {
-    /// the clay handle: pair, or start Wisp
+    /// the outlined button: pair, or start Wisp
     Go,
-    /// "重新配对" while connected
+    /// "换一台 Mac 配对" while connected
     Relink,
     /// back out of re-pairing
     Cancel,
+    /// the lock-screen switch (RULES.md W1)
+    Service,
     Quit,
 }
 
 struct Fonts {
+    label: Font,
     head: Font,
     body: Font,
-    label: Font,
-    value: Font,
-    number: Font,
+    mono: Font,
+    button: Font,
+    row: Font,
     digit: Font,
-    link: Font,
-    handle: Font,
-    screen: Font,
-    mac: Font,
-    notice: Font,
+    drawing: Font,
 }
 
 impl Fonts {
     fn new() -> Fonts {
-        let (yahei, segoe) = ("Microsoft YaHei UI", "Segoe UI");
+        let yahei = "Microsoft YaHei UI";
         Fonts {
-            head: Font::new(yahei, 17.0, true),
+            label: Font::new(yahei, 12.0, false),
+            head: Font::new(yahei, 21.0, true),
             body: Font::new(yahei, 12.0, false),
-            label: Font::new(yahei, 11.0, true),
-            value: Font::new(yahei, 19.0, true),
-            number: Font::new(segoe, 19.0, true),
-            digit: Font::new(segoe, 22.0, true),
-            link: Font::new(yahei, 12.0, true),
-            handle: Font::new(yahei, 14.0, true),
-            screen: Font::new(yahei, 17.0, true),
-            mac: Font::new(segoe, 13.0, true),
-            notice: Font::new(yahei, 16.0, true),
+            mono: Font::new("Consolas", 12.5, false),
+            button: Font::new(yahei, 13.0, true),
+            row: Font::new(yahei, 14.0, false),
+            digit: Font::new(yahei, 28.0, false),
+            drawing: Font::new(yahei, 12.0, true),
         }
     }
 }
 
-/// The static picture, kept between paints.
+/// The picture, kept between paints.
 struct Cache {
     dc: Hdc,
     bitmap: *mut c_void,
@@ -273,7 +320,12 @@ impl Drop for Cache {
 
 struct Ui {
     fonts: Fonts,
+    ink: Ink,
     view: View,
+    /// WispService installed: the lock screen and UAC prompts are reachable (W1)
+    service: bool,
+    /// asked to switch the service to this, and when; shown until it is so
+    service_asked: Option<(bool, Instant)>,
     /// digits typed so far
     code: String,
     busy: bool,
@@ -282,11 +334,10 @@ struct Ui {
     repairing: bool,
     hover: Option<Hit>,
     pressed: Press<Hit>,
-    frame: u32,
+    caret_on: bool,
     scale: f32,
-    /// the static picture, and whether it needs drawing again
+    /// the picture, and whether it needs drawing again
     still: Option<Cache>,
-    back: Option<Cache>,
     dirty: bool,
 }
 
@@ -299,8 +350,17 @@ impl Ui {
         matches!(self.view.tray, Tray::Connected { .. })
     }
 
+    fn stopped(&self) -> bool {
+        matches!(self.view.tray, Tray::Stopped)
+    }
+
     fn ready(&self) -> bool {
         self.code.len() == 6 && !self.busy
+    }
+
+    /// what the switch shows: the request while it waits, else the truth
+    fn service_shown(&self) -> bool {
+        self.service_asked.map_or(self.service, |(on, _)| on)
     }
 }
 
@@ -312,319 +372,219 @@ fn with_ui<T>(f: impl FnOnce(&mut Ui) -> T) -> Option<T> {
     UI.with(|ui| ui.borrow_mut().as_mut().map(f))
 }
 
+// MARK: - words
+
+/// The small coloured line, the big one, and the line under it.
+fn words(ui: &Ui) -> (String, String, String) {
+    let v = &ui.view;
+    match &v.tray {
+        Tray::Connected { since, host } if !ui.repairing => {
+            let name = v.headline.strip_prefix("已连接 ").unwrap_or(&v.headline).to_string();
+            (format!("已连接 · {since}"), name, host.clone())
+        }
+        Tray::Connected { .. } => ("已连接".into(), "换一台 Mac".into(), "配对成功后，会替换现在这台 Mac".into()),
+        Tray::Pair { fresh: true, .. } => ("还没有配对".into(), "配对这台电脑".into(), "在 Mac 的 Wisp 里点“配对新电脑”，再输入它显示的数字".into()),
+        Tray::Pair { fresh: false, .. } => ("正在寻找".into(), "正在寻找 Mac".into(), v.detail.clone()),
+        Tray::Stopped => ("没有在运行".into(), "Wisp".into(), v.detail.clone()),
+    }
+}
+
+fn dot(ui: &Ui) -> u32 {
+    match ui.view.light {
+        Light::Green => ui.ink.celadon,
+        Light::Orange if matches!(ui.view.tray, Tray::Pair { fresh: true, .. }) => ui.ink.faint,
+        Light::Orange => ui.ink.ochre,
+        Light::Red => ui.ink.rust,
+    }
+}
+
 // MARK: - geometry
 
-/// The handle's box in the footer row.
-fn handle_box(ui: &Ui) -> Option<(f32, f32, f32, f32)> {
-    (ui.pairing() || matches!(ui.view.tray, Tray::Stopped)).then_some((22.0, FOOT + 2.0, 132.0, 36.0))
+fn button(ui: &Ui) -> Option<&'static str> {
+    if ui.stopped() {
+        Some("启动 Wisp")
+    } else if ui.pairing() {
+        Some(if ui.busy { "配对中…" } else { "配对" })
+    } else {
+        None
+    }
+}
+
+/// The footer's left link, if any, and its width.
+fn left_link(ui: &Ui) -> Option<(&'static str, Hit, f32)> {
+    if ui.repairing {
+        Some(("取消", Hit::Cancel, 40.0))
+    } else if ui.connected() {
+        Some(("换一台 Mac 配对", Hit::Relink, 110.0))
+    } else {
+        None
+    }
 }
 
 fn hit_test(ui: &Ui, x: f32, y: f32) -> Option<Hit> {
     let inside = |(bx, by, bw, bh): (f32, f32, f32, f32)| x >= bx && x <= bx + bw && y >= by && y <= by + bh;
-    if let Some(b) = handle_box(ui) {
-        if inside(b) {
-            return Some(Hit::Go);
+    if button(ui).is_some() && inside(BUTTON) {
+        return Some(Hit::Go);
+    }
+    // the whole row toggles, not just the knob
+    if inside((0.0, ROW, W, FOOT - ROW)) {
+        return Some(Hit::Service);
+    }
+    if let Some((_, hit, w)) = left_link(ui) {
+        if inside((PAD - 4.0, FOOT + 8.0, w + 8.0, 28.0)) {
+            return Some(hit);
         }
     }
-    if ui.repairing && inside((172.0, FOOT + 8.0, 40.0, 24.0)) {
-        return Some(Hit::Cancel);
-    }
-    if ui.connected() && !ui.repairing && inside((22.0, FOOT + 8.0, 64.0, 24.0)) {
-        return Some(Hit::Relink);
-    }
-    if inside((W - 22.0 - 70.0, FOOT + 8.0, 70.0, 24.0)) {
+    if inside((W - PAD - 70.0, FOOT + 8.0, 74.0, 28.0)) {
         return Some(Hit::Quit);
     }
     None
 }
 
-/// The monitor arm's elbow: clamped at `base`, reaching `mount`, elbow up (the Mac's sum).
-fn elbow(base: (f32, f32), mount: (f32, f32)) -> (f32, f32) {
-    let (l1, l2) = (135.0f32, 125.0f32);
-    let (dx, dy) = (mount.0 - base.0, mount.1 - base.1);
-    let len = (dx * dx + dy * dy).sqrt();
-    let d = len.clamp((l1 - l2).abs() + 1.0, l1 + l2 - 1.0);
-    let a = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
-    let h = (l1 * l1 - a * a).max(0.0).sqrt();
-    let (ux, uy) = (dx / len, dy / len);
-    let (px, py) = (base.0 + a * ux, base.1 + a * uy);
-    let (e1, e2) = ((px - h * uy, py + h * ux), (px + h * uy, py - h * ux));
-    if e1.1 < e2.1 { e1 } else { e2 }
+fn slot_x(i: usize) -> f32 {
+    let width = 6.0 * 30.0 + 5.0 * 12.0 + 12.0;
+    (W - width) / 2.0 + i as f32 * 42.0 + if i >= 3 { 12.0 } else { 0.0 }
 }
+
+const SLOT_Y: f32 = MID + 56.0;
 
 // MARK: - drawing
 
-/// Text with the engraved look: a light edge one pixel below.
-fn engraved(c: &Canvas, s: &str, font: &Font, color: u32, x: f32, y: f32, w: f32, h: f32, align: Align) {
-    c.text(s, font, rgba(0xFFEBCD, 0.35), x, y + 1.0, w, h, align);
-    c.text(s, font, rgb(color), x, y, w, h, align);
+fn hairline(c: &Canvas, y: f32, color: u32) {
+    c.fill(&Path::poly(&[(0.0, y), (W, y), (W, y + 1.0), (0.0, y + 1.0)]), rgb(color));
 }
 
-/// A soft contact shadow, as the Mac draws one with a blurred ellipse.
-fn contact(c: &Canvas, x: f32, y: f32, w: f32, h: f32, opacity: f32) {
-    c.soft(x - 8.0, y - 5.0, w + 16.0, h + 10.0, rgba(0x8A6640, opacity));
-}
+fn draw(c: &Canvas, ui: &Ui) {
+    let ink = ui.ink;
+    c.fill(&Path::poly(&[(0.0, 0.0), (W, 0.0), (W, H), (0.0, H)]), rgb(ink.paper));
 
-fn draw_scene(c: &Canvas, ui: &Ui) {
-    let live = ui.connected();
-    let stopped = matches!(ui.view.tray, Tray::Stopped);
-    let unpaired = matches!(ui.view.tray, Tray::Pair { fresh: true, .. });
-    // the wall, its window light, the skirting, the desk
-    c.fill(&Path::poly(&[(300.0, 0.0), (420.0, 0.0), (360.0, 262.0), (250.0, 262.0)]), rgba(0xF5EEE3, 0.7));
-    c.fill(&Path::poly(&[(0.0, 252.0), (460.0, 252.0), (460.0, 262.0), (0.0, 262.0)]), rgb(0xE3D8C8));
-    c.fill_linear(&Path::poly(&[(34.0, 262.0), (426.0, 262.0), (460.0, 372.0), (0.0, 372.0)]), (0.0, 262.0), (0.0, 372.0), rgb(0xD9BC95), rgb(0xCDAA7E));
-    c.stroke(&Path::new().move_to(34.0, 262.0).line_to(426.0, 262.0), rgb(0xE9D3B2), 2.0);
-    let grain = Path::new().move_to(60.0, 290.0).quad_to((200.0, 284.0), 400.0, 292.0).move_to(20.0, 330.0).quad_to((180.0, 322.0), 440.0, 334.0);
-    c.stroke(&grain, rgba(0xC49C6E, 0.45), 1.2);
-
-    // the plant
-    c.within(412.0, 0.0, 1.0, |c| {
-        contact(c, -26.0, 295.0, 52.0, 10.0, 0.3);
-        let pot = Path::new().move_to(-18.0, 262.0).line_to(18.0, 262.0).line_to(14.0, 298.0).quad_to((0.0, 302.0), -14.0, 298.0).close();
-        c.fill_linear(&pot, (-18.0, 0.0), (18.0, 0.0), rgb(0xD98463), rgb(0xB9654A));
-        c.fill(&Path::round_rect(-20.0, 258.0, 40.0, 8.0, 3.0), rgb(0xE39572));
-        for (p, color) in [
-            ([-4.0, 236.0, -26.0, 226.0, -30.0, 206.0, -12.0, 210.0, -2.0, 228.0], 0x6FAE7E),
-            ([4.0, 230.0, 22.0, 218.0, 30.0, 196.0, 34.0, 218.0, 14.0, 236.0], 0x5C9C6C),
-            ([-2.0, 228.0, 6.0, 206.0, 2.0, 184.0, 14.0, 204.0, 10.0, 232.0], 0x7DBE8A),
-        ] {
-            let leaf = Path::new().move_to(0.0, 258.0).curve_to((p[0], p[1]), (p[2], p[3]), p[4], p[5]).curve_to((p[6], p[7]), (p[8], p[9]), 0.0, 258.0).close();
-            c.fill(&leaf, rgb(color));
-        }
-    });
-
-    // the monitor arm, clamped to the desk's back edge
-    let base = (330.0, 248.0);
-    let mount = (146.0 + 84.0, 94.0 + 52.0);
-    let bend = elbow(base, mount);
-    contact(c, base.0 - 16.0, base.1 + 18.0, 32.0, 6.0, 0.3);
-    c.fill_linear(&Path::round_rect(base.0 - 11.0, base.1 + 6.0, 22.0, 16.0, 3.0), (0.0, base.1 + 6.0), (0.0, base.1 + 22.0), rgb(0xD2D6DC), rgb(0xAEB4BC));
-    c.fill(&Path::round_rect(base.0 - 4.0, base.1 - 2.0, 8.0, 12.0, 2.0), rgb(0xC7CCD2));
-    let arm = Path::new().move_to(base.0, base.1).line_to(bend.0, bend.1).line_to(mount.0, mount.1);
-    c.stroke(&arm, rgb(0xAEB4BC), 9.0);
-    c.stroke(&arm, rgb(0xE2E5E9), 6.0);
-    for (x, y) in [base, bend] {
-        let joint = Path::ellipse(x - 5.5, y - 5.5, 11.0, 11.0);
-        c.fill(&joint, rgb(0xD2D6DC));
-        c.stroke(&joint, rgb(0xAEB4BC), 1.3);
-    }
-
-    // this computer's screen
-    c.within(146.0, 94.0, 1.0, |c| {
-        c.soft(-6.0, 6.0, 180.0, 116.0, rgba(0x6B5236, 0.3));
-        c.fill_linear(&Path::round_rect(0.0, 0.0, 168.0, 104.0, 10.0), (0.0, 0.0), (0.0, 104.0), rgb(0xEEF0F3), rgb(0xD2D6DC));
-        c.fill(&Path::round_rect(5.0, 5.0, 158.0, 94.0, 6.0), rgb(0x1F242B));
-        let (top, bottom) = if live { (0x8FE0D3, 0x2F8F84) } else if stopped { (0xC9BFB4, 0x8E8276) } else { (0xF5D79A, 0xC9923A) };
-        c.fill_linear(&Path::round_rect(9.0, 9.0, 150.0, 86.0, 3.0), (0.0, 9.0), (0.0, 95.0), rgb(top), rgb(bottom));
-        let hills = Path::new().move_to(9.0, 72.0).quad_to((50.0, 58.0), 90.0, 70.0).quad_to((130.0, 82.0), 159.0, 64.0).line_to(159.0, 95.0).line_to(9.0, 95.0).close();
-        c.fill(&hills, rgba(0xFFFFFF, 0.16));
-        c.fill(&Path::poly(&[(9.0, 87.0), (159.0, 87.0), (159.0, 95.0), (9.0, 95.0)]), rgba(0x000000, 0.22));
-        c.fill(&Path::round_rect(78.0, 89.0, 12.0, 4.0, 1.0), rgba(0xFFFFFF, 0.7));
-        c.text("这台电脑", &ui.fonts.screen, rgba(0xFFFFFF, 0.95), 9.0, 30.0, 150.0, 30.0, Align::Center);
-    });
-
-    // the Mac
-    let fade = if unpaired { 0.3 } else { 1.0 };
-    contact(c, 140.0, 353.0, 180.0, 14.0, 0.35);
-    c.fill_linear(&Path::round_rect(166.0, 234.0, 128.0, 96.0, 9.0), (0.0, 234.0), (0.0, 330.0), rgba(0xEEF0F3, fade), rgba(0xD2D6DC, fade));
-    c.fill(&Path::round_rect(170.0, 238.0, 120.0, 88.0, 6.0), rgba(0x1F242B, fade));
-    c.fill_linear(&Path::round_rect(174.0, 243.0, 112.0, 79.0, 3.0), (174.0, 243.0), (286.0, 322.0), rgba(0xF2C9A0, fade), rgba(0xC98D7A, fade));
-    c.fill(&Path::poly(&[(174.0, 243.0), (286.0, 243.0), (286.0, 248.0), (174.0, 248.0)]), rgba(0xFFFFFF, 0.35 * fade));
-    c.text(if unpaired { "?" } else { "Mac" }, &ui.fonts.mac, rgba(0xFFFFFF, 0.85 * fade), 174.0, 272.0, 112.0, 24.0, Align::Center);
-    let (top, bot, tl, tr, bl, br) = (330.0f32, 354.0f32, 166.0f32, 294.0f32, 152.0f32, 308.0f32);
-    let edge = |y: f32| {
-        let t = (y - top) / (bot - top);
-        (tl + (bl - tl) * t, tr + (br - tr) * t)
-    };
-    c.fill_linear(&Path::poly(&[(tl, top), (tr, top), (br, bot), (bl, bot)]), (0.0, top), (0.0, bot), rgba(0xE2E5E9, fade), rgba(0xC7CCD2, fade));
-    c.fill(&Path::poly(&[(bl, bot), (br, bot), (br - 2.5, bot + 4.5), (bl + 2.5, bot + 4.5)]), rgba(0xAEB4BC, fade));
-    let m = 8.5;
-    let ((l0, r0), (l1, r1)) = (edge(331.4), edge(343.6));
-    c.fill(&Path::poly(&[(l0 + m - 1.0, 331.4), (r0 - m + 1.0, 331.4), (r1 - m + 1.0, 343.6), (l1 + m - 1.0, 343.6)]), rgba(0xB3B9C1, fade));
-    let rows: [(f32, f32, &[f32]); 4] = [
-        (332.1, 2.2, &[1.0; 13]),
-        (334.9, 2.4, &[1.4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.4]),
-        (337.9, 2.5, &[1.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.8]),
-        (341.0, 2.5, &[1.2, 1.0, 1.2, 6.2, 1.2, 1.0, 1.2]),
-    ];
-    for (y, h, units) in rows {
-        let ((la, ra), (lb, rb)) = (edge(y), edge(y + h));
-        let (l, r) = ((la + lb) / 2.0 + m, (ra + rb) / 2.0 - m);
-        let gap = 0.8;
-        let unit = (r - l - gap * (units.len() - 1) as f32) / units.iter().sum::<f32>();
-        let mut x = l;
-        for u in units {
-            let w = unit * u;
-            c.fill(&Path::round_rect(x, y, w, h, 0.6), rgba(0x2E333A, fade));
-            x += w + gap;
-        }
-    }
-    c.fill(&Path::poly(&[(210.0, 345.2), (250.0, 345.2), (252.0, 352.4), (208.0, 352.4)]), rgba(0xD5D9DE, fade));
-
-    // the mug (its steam moves, so it is drawn each frame)
-    contact(c, 75.0, 351.0, 44.0, 10.0, 0.3);
-    c.fill(&Path::new().move_to(80.0, 324.0).line_to(114.0, 324.0).line_to(111.0, 354.0).quad_to((97.0, 358.0), 83.0, 354.0).close(), rgb(CLAY));
-    c.fill(&Path::ellipse(80.0, 320.0, 34.0, 8.0), rgb(0x7A5236));
-    c.stroke(&Path::new().move_to(113.0, 330.0).curve_to((124.0, 330.0), (124.0, 346.0), 111.0, 346.0), rgb(CLAY), 4.0);
-}
-
-fn draw_still(c: &Canvas, ui: &Ui) {
-    c.fill(&Path::poly(&[(0.0, 0.0), (W, 0.0), (W, H), (0.0, H)]), rgb(WALL));
-    c.within(0.0, SCENE_TOP - 38.0 * SCENE_SCALE, SCENE_SCALE, |c| draw_scene(c, ui));
-
-    // the sign on the wall
-    let dot = match ui.view.light {
-        Light::Green => TEAL,
-        Light::Orange => AMBER,
-        Light::Red => RED,
-    };
-    c.fill(&Path::ellipse(18.0, 19.0, 18.0, 18.0), rgba(dot, 0.2));
-    c.fill(&Path::ellipse(22.0, 23.0, 10.0, 10.0), rgb(dot));
-    c.text(&ui.view.headline, &ui.fonts.head, rgb(INK), 44.0, 14.0, W - 60.0, 28.0, Align::Left);
-    c.paragraph(&ui.view.detail, &ui.fonts.body, rgb(INK_SOFT), 44.0, 42.0, 250.0, 36.0);
+    // the header: a coloured word, the name, the line under it, the button
+    let (label, head, line) = words(ui);
+    let d = dot(ui);
+    c.fill(&Path::ellipse(PAD, 23.0, 7.0, 7.0), rgb(d));
+    c.text(&label, &ui.fonts.label, rgb(d), PAD + 13.0, 16.0, 250.0, 20.0, Align::Left);
+    c.text(&head, &ui.fonts.head, rgb(ink.text), PAD - 1.0, 40.0, if button(ui).is_some() { 240.0 } else { W - 2.0 * PAD }, 34.0, Align::Left);
+    let mono = ui.connected() && !ui.repairing;
+    c.paragraph(&line, if mono { &ui.fonts.mono } else { &ui.fonts.body }, rgb(ink.soft), PAD, 78.0, if button(ui).is_some() { 240.0 } else { W - 2.0 * PAD }, 34.0);
     // the developer bridge is never open unnoticed (RULES.md X5)
-    if let Some(line) = &ui.view.bridge {
-        c.text(line, &ui.fonts.link, rgb(TEAL), 44.0, 76.0, 300.0, 18.0, Align::Left);
+    if let Some(note) = &ui.view.bridge {
+        c.text(note, &ui.fonts.body, rgb(ink.faint), PAD, 98.0, 240.0, 18.0, Align::Left);
     }
-
-    // the drawer and its tray
-    c.fill(&Path::poly(&[(0.0, DRAWER), (W, DRAWER), (W, H), (0.0, H)]), rgb(WOOD));
-    c.fill(&Path::poly(&[(0.0, DRAWER), (W, DRAWER), (W, DRAWER + 10.0), (0.0, DRAWER + 10.0)]), rgb(WOOD_BAND));
-    let (tx, ty, tw, th) = TRAY;
-    let tray = Path::round_rect(tx, ty, tw, th, 18.0);
-    c.stroke(&Path::new().move_to(tx + 14.0, ty + th + 0.6).line_to(tx + tw - 14.0, ty + th + 0.6), rgba(0xFFEBCD, 0.3), 1.0);
-    c.fill(&tray, rgb(TRAY_FILL));
-    c.clipped(&tray, |c| {
-        c.fill_linear(&Path::poly(&[(tx, ty), (tx + tw, ty), (tx + tw, ty + 14.0), (tx, ty + 14.0)]), (0.0, ty), (0.0, ty + 14.0), rgba(0x3C230A, 0.42), rgba(0x3C230A, 0.0));
-        c.stroke(&Path::new().move_to(tx, ty + th - 1.0).line_to(tx + tw, ty + th - 1.0), rgba(0xFFEBCD, 0.18), 2.0);
-    });
-    let label = |c: &Canvas, s: &str, x: f32, y: f32, w: f32, color: u32| c.text(s, &ui.fonts.label, color, x, y, w, 16.0, Align::Center);
-    let soft_cream = rgba(0xE9D6BA, 0.8);
-    match &ui.view.tray {
-        Tray::Connected { since, host } if !ui.repairing => {
-            let half = tw / 2.0;
-            label(c, "已连接", tx, ty + 34.0, half, soft_cream);
-            c.text(since, &ui.fonts.value, rgb(CREAM), tx, ty + 54.0, half, 32.0, Align::Center);
-            label(c, "Mac 地址", tx + half, ty + 34.0, half, soft_cream);
-            c.text(host, &ui.fonts.number, rgb(CREAM), tx + half, ty + 54.0, half, 32.0, Align::Center);
-            c.stroke(&Path::new().move_to(tx + half, ty + 30.0).line_to(tx + half, ty + 94.0), rgba(0x46290F, 0.35), 2.0);
-            c.stroke(&Path::new().move_to(tx + half + 1.5, ty + 30.0).line_to(tx + half + 1.5, ty + 94.0), rgba(0xFFEBCD, 0.18), 1.0);
+    if let Some(words) = button(ui) {
+        let (bx, by, bw, bh) = BUTTON;
+        let enabled = !ui.pairing() || ui.ready() || ui.stopped();
+        let down = enabled && ui.pressed.held() == Some(Hit::Go) && ui.hover == Some(Hit::Go);
+        let pill = Path::round_rect(bx, by, bw, bh, bh / 2.0);
+        let line = if enabled { ink.text } else { ink.ghost };
+        if down {
+            c.fill(&pill, rgb(ink.text));
+        } else if enabled && ui.hover == Some(Hit::Go) {
+            c.fill(&pill, rgba(ink.text, 0.06));
         }
-        Tray::Stopped => {
-            label(c, "状态", tx, ty + 36.0, tw, soft_cream);
-            c.text("Wisp 没在运行，键鼠不会过来", &ui.fonts.notice, rgb(CREAM), tx, ty + 56.0, tw, 30.0, Align::Center);
-        }
-        _ => draw_slots(c, ui),
+        c.stroke(&Path::round_rect(bx + 0.5, by + 0.5, bw - 1.0, bh - 1.0, bh / 2.0), rgb(line), 1.0);
+        c.text(words, &ui.fonts.button, rgb(if down { ink.paper } else { line }), bx, by, bw, bh, Align::Center);
     }
+    hairline(c, MID - 1.0, ink.rule);
 
-    // the footer: the handle on the left, words on the right
-    if let Some((hx, hy, hw, hh)) = handle_box(ui) {
-        let down = ui.pressed.held() == Some(Hit::Go) && ui.hover == Some(Hit::Go);
-        let enabled = !ui.pairing() || ui.ready();
-        let a = if enabled { 1.0 } else { 0.55 };
-        let y = if down { hy + 3.0 } else { hy };
-        c.soft(hx - 6.0, hy + 2.0, hw + 12.0, hh + 12.0, rgba(0x321C08, 0.25 * a));
-        c.fill(&Path::round_rect(hx, hy + if down { 4.0 } else { 4.0 }, hw, hh, hh / 2.0), rgba(CLAY_DROP, a));
-        let cap = Path::round_rect(hx, y, hw, hh, hh / 2.0);
-        c.fill(&cap, rgba(if ui.hover == Some(Hit::Go) && enabled { 0xF8F0E4 } else { CLAY }, a));
-        c.clipped(&cap, |c| c.fill(&Path::poly(&[(hx, y + hh - 4.0), (hx + hw, y + hh - 4.0), (hx + hw, y + hh), (hx, y + hh)]), rgba(CLAY_SHADE, a)));
-        let words = match (&ui.view.tray, ui.busy) {
-            (Tray::Stopped, _) => "启动 Wisp",
-            (_, true) => "配对中…",
-            _ => "配  对",
-        };
-        c.text(words, &ui.fonts.handle, rgba(INK, a), hx, y, hw, hh - 3.0, Align::Center);
+    // the middle: the drawing, the code being typed, or why nothing works
+    if ui.stopped() {
+        c.text("Wisp 的后台没有在运行，Mac 的键鼠不会过来", &ui.fonts.body, rgb(ink.soft), 0.0, MID, W, MID_H, Align::Center);
+    } else if ui.pairing() {
+        draw_code(c, ui);
+    } else {
+        draw_desk(c, ui);
     }
+    hairline(c, ROW, ink.rule);
+
+    // the lock-screen switch (RULES.md W1)
+    let on = ui.service_shown();
+    c.text("锁屏和权限弹窗也能控制", &ui.fonts.row, rgb(ink.text), PAD, ROW + 16.0, 280.0, 22.0, Align::Left);
+    let note = if ui.service_asked.is_some() { "等待管理员同意…" } else { "开关时需要管理员同意一次" };
+    c.text(note, &ui.fonts.body, rgb(ink.soft), PAD, ROW + 40.0, 300.0, 20.0, Align::Left);
+    let (sx, sy, sw, sh) = SWITCH;
+    let track = Path::round_rect(sx, sy, sw, sh, sh / 2.0);
+    if on {
+        c.fill(&track, rgb(ink.text));
+        c.fill(&Path::ellipse(sx + sw - sh + 3.0, sy + 3.0, sh - 6.0, sh - 6.0), rgb(ink.paper));
+    } else {
+        c.stroke(&Path::round_rect(sx + 0.5, sy + 0.5, sw - 1.0, sh - 1.0, sh / 2.0), rgb(if ui.hover == Some(Hit::Service) { ink.text } else { ink.faint }), 1.0);
+        c.fill(&Path::ellipse(sx + 4.0, sy + 4.0, sh - 8.0, sh - 8.0), rgb(ink.faint));
+    }
+    hairline(c, FOOT, ink.rule);
+
+    // the footer: re-pair or cancel on the left, quit on the right
     let link = |c: &Canvas, s: &str, hit: Hit, x: f32, w: f32, align: Align| {
-        let color = if ui.hover == Some(hit) { 0x3E2A14 } else { ENGRAVE };
-        engraved(c, s, &ui.fonts.link, color, x, FOOT + 8.0, w, 24.0, align);
+        let color = if ui.hover == Some(hit) { ink.text } else { ink.soft };
+        c.text(s, &ui.fonts.body, rgb(color), x, FOOT + 10.0, w, 24.0, align);
+        if ui.hover == Some(hit) {
+            let (ux, uw) = match align {
+                Align::Right => (x + w - w.min(56.0), w.min(56.0)),
+                _ => (x, w),
+            };
+            c.fill(&Path::poly(&[(ux, FOOT + 31.0), (ux + uw, FOOT + 31.0), (ux + uw, FOOT + 32.0), (ux, FOOT + 32.0)]), rgb(ink.text));
+        }
     };
-    if ui.repairing {
-        link(c, "取消", Hit::Cancel, 172.0, 40.0, Align::Left);
-    } else if ui.connected() {
-        link(c, "重新配对", Hit::Relink, 22.0, 80.0, Align::Left);
+    if let Some((s, hit, w)) = left_link(ui) {
+        link(c, s, hit, PAD, w, Align::Left);
     }
-    link(c, "退出 Wisp", Hit::Quit, W - 22.0 - 120.0, 120.0, Align::Right);
+    link(c, "退出 Wisp", Hit::Quit, W - PAD - 70.0, 70.0, Align::Right);
 }
 
-/// The pairing tray: a line of words over six carved slots, digits as clay keycaps.
-fn draw_slots(c: &Canvas, ui: &Ui) {
-    let (tx, ty, tw, _) = TRAY;
+/// This computer above the Mac, in one line each, with the wisp between them.
+fn draw_desk(c: &Canvas, ui: &Ui) {
+    let ink = ui.ink;
+    let live = ui.connected();
+    let (mx, my, mw, mh) = (148.0, MID + 12.0, 104.0, 60.0);
+    c.fill(&Path::round_rect(mx, my, mw, mh, 4.0), rgb(ink.sheet));
+    c.stroke(&Path::round_rect(mx, my, mw, mh, 4.0), rgb(ink.text), 1.2);
+    c.text("这台电脑", &ui.fonts.drawing, rgb(ink.text), mx, my, mw, mh, Align::Center);
+    let (lx, ly, lw, lh) = (161.0, MID + 92.0, 78.0, 44.0);
+    c.fill(&Path::round_rect(lx, ly, lw, lh, 3.0), rgb(ink.sheet));
+    c.stroke(&Path::round_rect(lx, ly, lw, lh, 3.0), rgb(ink.text), 1.2);
+    c.text("Mac", &ui.fonts.drawing, rgb(ink.soft), lx, ly, lw, lh, Align::Center);
+    let base = Path::poly(&[(lx - 14.0, ly + lh + 4.0), (lx + lw + 14.0, ly + lh + 4.0), (lx + lw + 7.0, ly + lh + 10.0), (lx - 7.0, ly + lh + 10.0)]);
+    c.stroke(&base, rgb(ink.text), 1.2);
+    let smoke = Path::new().move_to(200.0, ly - 3.0).curve_to((193.0, ly - 10.0), (208.0, my + mh + 12.0), 200.0, my + mh + 4.0);
+    c.stroke(&smoke, rgb(if live { ink.celadon } else { ink.ghost }), 1.6);
+    c.text("屏幕位置在 Mac 上设置", &ui.fonts.body, rgb(ink.faint), 0.0, MID + MID_H - 24.0, W, 20.0, Align::Center);
+}
+
+/// The Mac's code being typed: six figures over hairlines, the caret where the next goes.
+fn draw_code(c: &Canvas, ui: &Ui) {
+    let ink = ui.ink;
     let prompt = match &ui.view.tray {
         Tray::Pair { prompt, .. } => *prompt,
-        _ => "输入 Mac 上显示的新配对码",
+        _ => "输入新 Mac 上显示的配对码",
     };
-    let (words, color) = match (&ui.outcome, ui.busy) {
-        (_, true) => ("正在和 Mac 核对配对码", rgba(0xE9D6BA, 0.8)),
-        (Some((said, ok)), false) => (said.as_str(), rgb(if *ok { 0xD6F3EE } else { 0xFFD2C2 })),
-        (None, false) => (prompt, rgba(0xE9D6BA, 0.8)),
+    let (said, color) = match (&ui.outcome, ui.busy) {
+        (_, true) => ("正在和 Mac 核对配对码", ink.soft),
+        (Some((said, ok)), false) => (said.as_str(), if *ok { ink.celadon } else { ink.rust }),
+        (None, false) => (prompt, ink.soft),
     };
-    c.text(words, &ui.fonts.label, color, tx, ty + 22.0, tw, 16.0, Align::Center);
+    c.text(said, &ui.fonts.body, rgb(color), PAD, MID + 18.0, W - 2.0 * PAD, 20.0, Align::Center);
     let digits: Vec<char> = ui.code.chars().collect();
     for i in 0..6 {
-        let (x, y) = slot_origin(i);
-        let slot = Path::round_rect(x, y, 38.0, 44.0, 10.0);
-        c.fill(&slot, rgb(0x94704A));
-        c.clipped(&slot, |c| {
-            c.fill_linear(&Path::poly(&[(x, y), (x + 38.0, y), (x + 38.0, y + 9.0), (x, y + 9.0)]), (0.0, y), (0.0, y + 9.0), rgba(0x3C230A, 0.45), rgba(0x3C230A, 0.0));
-        });
+        let x = slot_x(i);
+        let line = if i < digits.len() || i == digits.len() { ink.text } else { ink.ghost };
+        c.fill(&Path::poly(&[(x, SLOT_Y + 44.0), (x + 30.0, SLOT_Y + 44.0), (x + 30.0, SLOT_Y + 45.0), (x, SLOT_Y + 45.0)]), rgb(line));
         if let Some(ch) = digits.get(i) {
-            c.fill(&Path::round_rect(x + 1.0, y + 4.0, 36.0, 40.0, 9.0), rgb(CLAY_DROP));
-            let cap = Path::round_rect(x + 1.0, y, 36.0, 40.0, 9.0);
-            c.fill(&cap, rgb(CLAY));
-            c.clipped(&cap, |c| c.fill(&Path::poly(&[(x, y + 35.0), (x + 38.0, y + 35.0), (x + 38.0, y + 40.0), (x, y + 40.0)]), rgb(CLAY_SHADE)));
-            c.text(&ch.to_string(), &ui.fonts.digit, rgb(INK), x, y, 38.0, 36.0, Align::Center);
+            c.text(&ch.to_string(), &ui.fonts.digit, rgb(ink.text), x - 4.0, SLOT_Y, 38.0, 42.0, Align::Center);
         }
     }
-}
-
-fn slot_origin(i: usize) -> (f32, f32) {
-    let (tx, ty, tw, _) = TRAY;
-    let width = 6.0 * 38.0 + 5.0 * 8.0 + 10.0;
-    let x = tx + (tw - width) / 2.0 + i as f32 * 46.0 + if i >= 3 { 10.0 } else { 0.0 };
-    (x, ty + 50.0)
-}
-
-/// The moving parts, drawn over the still picture every frame.
-fn draw_moving(c: &Canvas, ui: &Ui) {
-    let t = ui.frame as f32 * 0.05;
-    c.within(0.0, SCENE_TOP - 38.0 * SCENE_SCALE, SCENE_SCALE, |c| {
-        // steam over the mug
-        let rise = ((t / 1.5 * std::f32::consts::PI).sin() + 1.0) / 2.0;
-        c.within(0.0, -5.0 * rise, 1.0, |c| {
-            let steam = Path::new().move_to(92.0, 318.0).curve_to((86.0, 308.0), (98.0, 302.0), 92.0, 292.0).move_to(102.0, 316.0).curve_to((96.0, 306.0), (108.0, 300.0), 102.0, 290.0);
-            c.stroke(&steam, rgba(0xFFFFFF, 0.9 - 0.5 * rise), 2.5);
-        });
-        // the wisp between the Mac and this screen
-        if ui.connected() {
-            let wisp = Path::new().move_to(230.0, 244.0).curve_to((206.0, 232.0), (254.0, 214.0), 230.0, 200.0);
-            for (w, a) in [(12.0, 0.12), (8.0, 0.18)] {
-                c.stroke(&wisp, rgba(TEAL_GLOW, a), w);
-            }
-            let phase = (t / 0.6).fract() * (9.0 / 3.5);
-            c.stroke_dashed(&wisp, rgb(TEAL), 3.5, &[0.01, 9.0 / 3.5], -phase);
-        }
-    });
-    if ui.pairing() && !ui.busy && ui.code.len() < 6 && (ui.frame / 10) % 2 == 0 {
-        let (x, y) = slot_origin(ui.code.len());
-        c.fill(&Path::round_rect(x + 18.0, y + 11.0, 2.0, 22.0, 1.0), rgba(CREAM, 0.85));
+    if ui.caret_on && !ui.busy && digits.len() < 6 {
+        let x = slot_x(digits.len()) + 14.0;
+        c.fill(&Path::poly(&[(x, SLOT_Y + 10.0), (x + 1.5, SLOT_Y + 10.0), (x + 1.5, SLOT_Y + 38.0), (x, SLOT_Y + 38.0)]), rgb(ink.text));
     }
+    c.text("用键盘输入数字，回车确认", &ui.fonts.body, rgb(ink.faint), 0.0, MID + MID_H - 30.0, W, 20.0, Align::Center);
 }
 
-/// The parts of the window (in device pixels) that move between frames.
-fn moving_rects(scale: f32) -> [Rect; 3] {
-    let r = |x: f32, y: f32, w: f32, h: f32| Rect {
-        left: (x * scale) as i32 - 2,
-        top: (y * scale) as i32 - 2,
-        right: ((x + w) * scale) as i32 + 2,
-        bottom: ((y + h) * scale) as i32 + 2,
-    };
-    let s = |v: f32, top: bool| if top { SCENE_TOP + (v - 38.0) * SCENE_SCALE } else { v * SCENE_SCALE };
-    [
-        r(s(80.0, false), s(280.0, true), s(36.0, false), s(46.0, false) + 6.0),
-        r(s(196.0, false), s(190.0, true), s(68.0, false), s(66.0, false)),
-        r(TRAY.0, TRAY.1 + 50.0, TRAY.2, 44.0),
-    ]
+fn caret_rect(scale: f32) -> Rect {
+    Rect {
+        left: (slot_x(0) * scale) as i32 - 4,
+        top: (SLOT_Y * scale) as i32,
+        right: ((slot_x(5) + 40.0) * scale) as i32 + 4,
+        bottom: ((SLOT_Y + 46.0) * scale) as i32 + 2,
+    }
 }
 
 unsafe fn paint(hwnd: Hwnd) {
@@ -634,29 +594,32 @@ unsafe fn paint(hwnd: Hwnd) {
         let (w, h) = ((W * ui.scale).ceil() as i32, (H * ui.scale).ceil() as i32);
         if ui.still.as_ref().is_none_or(|c| c.w != w || c.h != h) {
             ui.still = Some(Cache::new(w, h));
-            ui.back = Some(Cache::new(w, h));
             ui.dirty = true;
         }
-        let (still, back) = (ui.still.as_ref().unwrap().dc, ui.back.as_ref().unwrap().dc);
+        let still = ui.still.as_ref().unwrap().dc;
         if ui.dirty {
             ui.dirty = false;
             let c = Canvas::on(still, ui.scale);
-            draw_still(&c, ui);
+            draw(&c, ui);
         }
         let p = ps.paint;
-        BitBlt(back, p.left, p.top, p.right - p.left, p.bottom - p.top, still, p.left, p.top, SRCCOPY);
-        {
-            let c = Canvas::on(back, ui.scale);
-            draw_moving(&c, ui);
-        }
-        BitBlt(hdc, p.left, p.top, p.right - p.left, p.bottom - p.top, back, p.left, p.top, SRCCOPY);
+        BitBlt(hdc, p.left, p.top, p.right - p.left, p.bottom - p.top, still, p.left, p.top, SRCCOPY);
     });
     EndPaint(hwnd, &ps);
 }
 
-/// Something on the still picture changed: draw it again on the next paint.
+/// Something changed: draw it again on the next paint, and blink the caret only while
+/// a code is being typed.
 unsafe fn refresh(hwnd: Hwnd) {
-    with_ui(|ui| ui.dirty = true);
+    let typing = with_ui(|ui| {
+        ui.dirty = true;
+        ui.pairing() && !ui.busy && ui.code.len() < 6
+    });
+    if typing == Some(true) {
+        SetTimer(hwnd, CARET_TIMER, 530, ptr::null_mut());
+    } else {
+        KillTimer(hwnd, CARET_TIMER);
+    }
     InvalidateRect(hwnd, ptr::null(), 0);
 }
 
@@ -696,7 +659,7 @@ fn start_client() {
 unsafe fn act(hwnd: Hwnd, hit: Hit) {
     match hit {
         Hit::Go => {
-            if with_ui(|ui| matches!(ui.view.tray, Tray::Stopped)) == Some(true) {
+            if with_ui(|ui| ui.stopped()) == Some(true) {
                 start_client();
             } else {
                 start_pairing(hwnd);
@@ -716,6 +679,21 @@ unsafe fn act(hwnd: Hwnd, hit: Hit) {
                 ui.outcome = None;
             });
         }
+        Hit::Service => {
+            // one request at a time; the UAC prompt answers it (RULES.md W1)
+            if let Some(on) = with_ui(|ui| {
+                if ui.service_asked.is_some() {
+                    return None;
+                }
+                let on = !ui.service;
+                ui.service_asked = Some((on, Instant::now()));
+                Some(on)
+            })
+            .flatten()
+            {
+                std::thread::spawn(move || crate::shell_win::switch_service(on));
+            }
+        }
         Hit::Quit => quit(hwnd),
     }
     refresh(hwnd);
@@ -726,6 +704,17 @@ fn logical(lparam: isize, scale: f32) -> (f32, f32) {
     (x / scale, y / scale)
 }
 
+/// Follows the Windows app setting: paper or ink, title bar included.
+unsafe fn apply_theme(hwnd: Hwnd) {
+    let dark = dark_mode();
+    if let Some(ink) = with_ui(|ui| {
+        ui.ink = if dark { DARK } else { LIGHT };
+        ui.ink
+    }) {
+        tint_title_bar(hwnd, &ink, dark);
+    }
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> isize {
     match msg {
         WM_PAINT => {
@@ -733,43 +722,51 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
             0
         }
         WM_ERASEBKGND => 1,
+        WM_SETTINGCHANGE => {
+            apply_theme(hwnd);
+            refresh(hwnd);
+            0
+        }
         WM_TIMER if wparam == STATUS_TIMER => {
             let view = current_view();
+            let service = crate::service_win::installed();
             let changed = with_ui(|ui| {
-                if ui.view == view {
-                    return false;
+                let mut changed = false;
+                if ui.view != view {
+                    if matches!(view.tray, Tray::Connected { .. }) && !matches!(ui.view.tray, Tray::Connected { .. }) {
+                        // just paired: back to the drawing
+                        ui.repairing = false;
+                        ui.code.clear();
+                        ui.outcome = None;
+                    }
+                    ui.view = view;
+                    changed = true;
                 }
-                if matches!(view.tray, Tray::Connected { .. }) && !matches!(ui.view.tray, Tray::Connected { .. }) {
-                    // just paired: back to the connected tray
-                    ui.repairing = false;
-                    ui.code.clear();
-                    ui.outcome = None;
+                if ui.service != service {
+                    ui.service = service;
+                    changed = true;
                 }
-                ui.view = view;
-                true
+                // answered (or refused, or left too long): show the truth again
+                if let Some((on, at)) = ui.service_asked {
+                    if on == service || at.elapsed().as_secs() > SERVICE_WAIT_SECS {
+                        ui.service_asked = None;
+                        changed = true;
+                    }
+                }
+                changed
             });
             if changed == Some(true) {
                 refresh(hwnd);
             }
             0
         }
-        WM_TIMER if wparam == FRAME_TIMER => {
-            if IsIconic(hwnd) != 0 {
-                return 0;
-            }
-            if let Some((scale, wisp, caret)) = with_ui(|ui| {
-                ui.frame = ui.frame.wrapping_add(1);
-                // the caret only changes when it blinks
-                (ui.scale, ui.connected(), ui.pairing() && ui.frame % 10 == 0)
+        WM_TIMER if wparam == CARET_TIMER => {
+            if let Some(scale) = with_ui(|ui| {
+                ui.caret_on = !ui.caret_on;
+                ui.dirty = true;
+                ui.scale
             }) {
-                let [steam, wisp_rect, caret_rect] = moving_rects(scale);
-                InvalidateRect(hwnd, &steam, 0);
-                if wisp {
-                    InvalidateRect(hwnd, &wisp_rect, 0);
-                }
-                if caret {
-                    InvalidateRect(hwnd, &caret_rect, 0);
-                }
+                InvalidateRect(hwnd, &caret_rect(scale), 0);
             }
             0
         }
@@ -848,9 +845,11 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
                     '0'..='9' if ui.code.len() < 6 => {
                         ui.code.push(ch);
                         ui.outcome = None;
+                        ui.caret_on = true;
                     }
                     '\u{8}' => {
                         ui.code.pop();
+                        ui.caret_on = true;
                     }
                     '\r' if ui.code.len() == 6 => go = true,
                     '\r' => ui.outcome = Some(("配对码是 6 位数字".into(), false)),
@@ -873,7 +872,7 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
                 ui.busy = false;
                 if outcome.as_ref().is_some_and(|o| o.1) {
                     ui.code.clear();
-                    // still connected (or back already): the connected tray, not a stuck pairing one
+                    // still connected (or back already): the drawing, not a stuck pairing
                     ui.repairing = false;
                 }
                 ui.outcome = outcome;
@@ -923,28 +922,29 @@ pub fn run() {
         if hwnd.is_null() {
             return;
         }
-        // the title bar in the wall's colour (Windows 11; older versions ignore it)
-        tint_title_bar(hwnd);
         UI.with(|ui| {
             *ui.borrow_mut() = Some(Ui {
                 fonts: Fonts::new(),
+                ink: LIGHT,
                 view: current_view(),
+                service: crate::service_win::installed(),
+                service_asked: None,
                 code: String::new(),
                 busy: false,
                 outcome: None,
                 repairing: false,
                 hover: None,
                 pressed: Press::default(),
-                frame: 0,
+                caret_on: true,
                 scale,
                 still: None,
-                back: None,
                 dirty: true,
             })
         });
+        apply_theme(hwnd);
         ShowWindow(hwnd, SW_SHOW);
         SetTimer(hwnd, STATUS_TIMER, 1000, ptr::null_mut());
-        SetTimer(hwnd, FRAME_TIMER, 50, ptr::null_mut());
+        refresh(hwnd);
         let mut msg = std::mem::zeroed::<Msg>();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);

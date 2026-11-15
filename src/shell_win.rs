@@ -234,7 +234,7 @@ fn open_status() {
 
 /// Switches WispService on or off: a separate `service-switch` run as the user asks
 /// for the administrator (UAC) and does it (RULES.md W1).
-fn switch_service(on: bool) {
+pub(crate) fn switch_service(on: bool) {
     if let Ok(exe) = std::env::current_exe() {
         let _ = crate::service_win::run_as_user(&exe, if on { "service-switch on" } else { "service-switch off" });
     }

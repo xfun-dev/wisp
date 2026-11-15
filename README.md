@@ -62,12 +62,12 @@ Builds made with `--features bridge` (as `scripts/deploy.sh` does) carry a devel
 
 It is made mainly for AI assistants: an AI working on the Mac (Claude Code, for example) can use it to operate the Windows PC directly and do anything that needs doing there.
 
-- Turn it on: in the Mac settings window, click the plant twice and then the mug (or run `wisp win on`); the same again turns it off. It stays on until you turn it off, across restarts and reconnects
-- While it is on, both sides show it: the steam over the Mac's mug turns teal, and both windows say the bridge is open
+- Turn it on: in the Mac settings window, switch on 开发者通道 (developer bridge) in the ··· menu (or run `wisp win on`); switch it off the same way. It stays on until you turn it off, across restarts and reconnects
+- While it is on, both sides show it: both windows say the bridge is open
 - Use: `wisp win exec "<command>" [--timeout seconds]`, `wisp win put <local> <remote>`, `wisp win get <remote> <local>`
 
 In Releases, the files ending in `-dev` are the developer builds with the bridge; the plain ones do not have it. Both computers need the developer build.
 
 ## License
 
-[MIT](LICENSE). The Fredoka font used by the settings window is under the [SIL Open Font License](ui/mac/fonts/Fredoka-OFL.txt).
+[MIT](LICENSE).

@@ -19,12 +19,11 @@ struct WispSettings: App {
             Installer.uninstall()
             exit(0)
         }
-        Fonts.register()
     }
 
     var body: some Scene {
         Window("Wisp", id: "settings") {
-            SettingsView().frame(width: 460)
+            SettingsView()
         }
         .windowResizability(.contentSize)
         // no title bar strip or separator: the traffic lights share a row with the brand mark
@@ -233,6 +232,15 @@ struct Status: Equatable {
     var codeTriesLeft = 0
     /// developer bridge: 1 open, 0 closed; nil in a core built without it (RULES.md X1)
     var bridge: Int?
+    /// when and why the last link ended (RULES.md U13), nil before any has
+    var drop: (at: Date, reason: String)?
+
+    static func == (a: Status, b: Status) -> Bool {
+        a.connected == b.connected && a.peer == b.peer && a.screen == b.screen && a.paused == b.paused
+            && a.edge == b.edge && a.speed == b.speed && a.scroll == b.scroll && a.paired == b.paired
+            && a.code == b.code && a.codeSecondsLeft == b.codeSecondsLeft && a.codeTriesLeft == b.codeTriesLeft
+            && a.bridge == b.bridge && a.drop?.at == b.drop?.at && a.drop?.reason == b.drop?.reason
+    }
 
     init?(reply: String) {
         guard reply.hasPrefix("ok\t") else { return nil }
@@ -253,6 +261,14 @@ struct Status: Equatable {
         codeSecondsLeft = fields["pair_left"].flatMap(Int.init) ?? 0
         codeTriesLeft = fields["pair_tries"].flatMap(Int.init) ?? 0
         bridge = fields["bridge"].flatMap(Int.init)
+        if let d = fields["drop"]?.split(separator: ":"), d.count == 2, let at = TimeInterval(d[0]) {
+            let reason = switch d[1] {
+            case "slept": "Mac 进入了睡眠"
+            case "silent": "对方没有响应"
+            default: "对方断开了连接"
+            }
+            drop = (Date(timeIntervalSince1970: at), reason)
+        }
     }
 }
 
@@ -263,6 +279,12 @@ final class Core: ObservableObject {
     private let wisp = NSHomeDirectory() + "/Library/Application Support/Wisp/wisp"
     private let job = "gui/\(getuid())/fun.xfun.wisp"
     private var timer: Timer?
+
+    /// A fixed status, nothing running: for rendering each state in a test (scripts/ui-states.sh).
+    init(fixed: Status?, problem: String? = nil) {
+        status = fixed
+        self.problem = problem
+    }
 
     init() {
         Task {
@@ -314,6 +336,14 @@ final class Core: ObservableObject {
         }
     }
 
+    /// "启动 Wisp" in the window: the same as opening Wisp again.
+    func start() {
+        Task {
+            await startIfNeeded()
+            refresh()
+        }
+    }
+
     /// Quitting Wisp quits all of it (RULES.md U11): the core, the menu bar icon, this window.
     func quit() {
         Task {
@@ -343,829 +373,600 @@ final class Core: ObservableObject {
     }
 }
 
-// MARK: - Look: a clay desk (RULES.md B3)
+// MARK: - Look: paper and ink (RULES.md B4)
 //
-// The window is one small scene: a wall, a wooden desk with this Mac and the other
-// computer on it, and the desk's drawer front holding the controls. Everything is
-// matte clay and wood; the only light is the teal wisp between the two machines.
+// One sheet of paper: ink-black words, hairline rules between sections, and a single
+// wisp of celadon smoke for "connected". No cards, no shadows, nothing saturated.
+// Follows the system's light and dark appearance.
 
 extension NSColor {
     convenience init(hex: UInt32, alpha: CGFloat = 1) {
         self.init(srgbRed: CGFloat(hex >> 16 & 0xFF) / 255, green: CGFloat(hex >> 8 & 0xFF) / 255,
                   blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
     }
+
+    /// One colour for light, one for dark, resolved by whatever it is drawn in.
+    static func ink(_ light: UInt32, _ dark: UInt32) -> NSColor {
+        NSColor(name: nil) { a in
+            NSColor(hex: a.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light)
+        }
+    }
+}
+
+enum Ink {
+    static let paper = NSColor.ink(0xF3EFE6, 0x1C1B19)
+    static let wash = NSColor.ink(0xEAE4D8, 0x262421)
+    static let text = NSColor.ink(0x23211D, 0xE9E4DA)
+    static let soft = NSColor.ink(0x635E55, 0xA9A397)
+    static let faint = NSColor.ink(0x8C867A, 0x7D776C)
+    static let rule = NSColor.ink(0xDDD5C6, 0x34312C)
+    static let ghost = NSColor.ink(0xB9B1A1, 0x4A463F)
+    static let sheet = NSColor.ink(0xF8F5EE, 0x23211E)
+    static let celadon = NSColor.ink(0x4E7068, 0x8DB3A8)
+    static let ochre = NSColor.ink(0x8F6326, 0xD2A266)
+    static let rust = NSColor.ink(0xA8452F, 0xE08A72)
 }
 
 extension Color {
-    init(hex: UInt32, opacity: Double = 1) { self.init(nsColor: NSColor(hex: hex, alpha: opacity)) }
-}
-
-enum Clay {
-    static let wall: UInt32 = 0xEDE5D8
-    static let wood: UInt32 = 0xB8936A
-    static let woodBand: UInt32 = 0xA88A66
-    static let tray: UInt32 = 0xA47E54
-    static let groove: UInt32 = 0x8E6A42
-    static let engrave: UInt32 = 0x6E4F2E
-    static let clay: UInt32 = 0xF3E9DA
-    static let clayShade: UInt32 = 0xD9C7AE
-    static let clayDrop: UInt32 = 0x8D704F
-    static let teal: UInt32 = 0x3FA69A
-    static let tealGlow: UInt32 = 0x5FD6C6
-    static let cream: UInt32 = 0xFFF7EC
-    static let ink: UInt32 = 0x4A3725
-    static let inkSoft: UInt32 = 0x8C7660
-    static let amber: UInt32 = 0xD49A2A
-    static let red: UInt32 = 0xC0503A
+    init(_ ns: NSColor) { self.init(nsColor: ns) }
 }
 
 extension Font {
-    /// The rounded face (Fredoka, SIL OFL) for numbers and Latin labels; Chinese stays in the system face.
-    static func round(_ size: CGFloat) -> Font { .custom("Fredoka", size: size).weight(.semibold) }
-}
-
-enum Fonts {
-    static func register() {
-        guard let url = Bundle.main.url(forResource: "Fredoka", withExtension: "ttf") else { return }
-        CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-    }
-
-    static func round(_ size: CGFloat) -> NSFont {
-        let d = NSFontDescriptor(fontAttributes: [
-            .family: "Fredoka",
-            .traits: [NSFontDescriptor.TraitKey.weight: NSFont.Weight.semibold],
-        ])
-        return NSFont(descriptor: d, size: size) ?? .systemFont(ofSize: size, weight: .semibold)
-    }
-}
-
-/// Engraved lettering on the wood: dark, with a light edge underneath.
-struct Engraved: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .foregroundStyle(Color(hex: Clay.engrave))
-            .shadow(color: Color(hex: 0xFFEBCD, opacity: 0.35), radius: 0, x: 0, y: 1)
-    }
-}
-
-extension View {
-    func engraved() -> some View { modifier(Engraved()) }
+    /// the headline face: Songti, which every Mac has
+    static func serif(_ size: CGFloat) -> Font { .custom("Songti SC", size: size).weight(.semibold) }
+    static func mono(_ size: CGFloat) -> Font { .system(size: size, design: .monospaced) }
 }
 
 // MARK: - State
 
-/// What the window is showing, derived from the core's status line.
 enum Mood: Equatable {
     case connected, searching, unpaired, paused, pairing
 
     init(_ s: Status) {
         if !s.code.isEmpty { self = .pairing }
         else if s.paired.isEmpty { self = .unpaired }
+        else if !s.connected { self = .searching }
         else if s.paused { self = .paused }
-        else if s.connected { self = .connected }
-        else { self = .searching }
-    }
-
-    var dot: UInt32 {
-        switch self {
-        case .connected: Clay.teal
-        case .searching, .pairing: Clay.amber
-        case .paused: Clay.red
-        case .unpaired: Clay.inkSoft
-        }
+        else { self = .connected }
     }
 }
 
-/// Where the other computer stands on the desk, per layout.
-struct Stage {
-    let monitor: CGPoint, scale: CGFloat, plantX: CGFloat
-    /// the wisp from this Mac's screen to the other one, as a cubic
-    let p0: CGPoint, c1: CGPoint, c2: CGPoint, p1: CGPoint
+/// The two speeds as three named steps and a fine setting (RULES.md U2).
+struct Steps {
+    let slow: Double, middle: Double, fast: Double
+    let range: ClosedRange<Double>, step: Double
+    let unit: (Double) -> String
 
-    static func of(_ edge: String) -> Stage {
-        switch edge {
-        case "left":
-            Stage(monitor: CGPoint(x: 10, y: 150), scale: 0.85, plantX: 412,
-                  p0: CGPoint(x: 172, y: 284), c1: CGPoint(x: 148, y: 282), c2: CGPoint(x: 172, y: 226), p1: CGPoint(x: 150, y: 196))
-        case "right":
-            Stage(monitor: CGPoint(x: 307, y: 150), scale: 0.85, plantX: 40,
-                  p0: CGPoint(x: 288, y: 284), c1: CGPoint(x: 312, y: 282), c2: CGPoint(x: 288, y: 226), p1: CGPoint(x: 310, y: 196))
-        default:
-            Stage(monitor: CGPoint(x: 146, y: 94), scale: 1, plantX: 412,
-                  p0: CGPoint(x: 230, y: 244), c1: CGPoint(x: 206, y: 232), c2: CGPoint(x: 254, y: 214), p1: CGPoint(x: 230, y: 200))
-        }
-    }
+    static let speed = Steps(slow: 0.6, middle: 1.0, fast: 1.5, range: 0.2...5, step: 0.1) { "\($0.formatted(.number.precision(.fractionLength(1))))×" }
+    static let scroll = Steps(slow: 1.5, middle: 3, fast: 6, range: 0.5...10, step: 0.5) { "\($0.formatted(.number.precision(.fractionLength(0...1)))) 行" }
 
-    var trail: CGPath {
-        let p = CGMutablePath()
-        p.move(to: p0)
-        p.addCurve(to: p1, control1: c1, control2: c2)
-        return p
+    /// 0 slow, 1 middle, 2 fast, 3 a value of its own
+    func index(_ v: Double) -> Int {
+        [slow, middle, fast].firstIndex { abs($0 - v) < 0.01 } ?? 3
     }
 }
 
-// MARK: - The desk scene
-
-/// The wall, the desk and the two machines. Core Animation layers built once; a change
-/// of layout or state moves or recolours them, and the loops (the wisp, the steam) run
-/// in the window server, so an open window costs this process almost no CPU.
-struct DeskScene: NSViewRepresentable {
-    let mood: Mood
-    let edge: String
-    let name: String
-    /// the developer bridge is open: the steam over the mug turns teal
-    var bridge = false
-    /// the hidden switch: plant, plant, mug (RULES.md X2); nil when the core has no bridge
-    var secret: (() -> Void)?
-
-    func makeNSView(context: Context) -> DeskLayers { DeskLayers() }
-
-    func updateNSView(_ view: DeskLayers, context: Context) {
-        view.secret = secret
-        view.show(mood: mood, edge: edge, name: name)
-        view.showBridge(bridge)
-        let side = ["left": "左侧", "right": "右侧"][edge] ?? "上方"
-        view.setAccessibilityLabel("书桌上：这台 Mac，另一台电脑的屏幕在它的\(side)")
+/// This Mac's address on the local network, if it has one.
+func lanAddress() -> String? {
+    var list: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&list) == 0, let first = list else { return nil }
+    defer { freeifaddrs(list) }
+    for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        let a = p.pointee
+        guard let addr = a.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET),
+              a.ifa_flags & UInt32(IFF_UP) != 0, a.ifa_flags & UInt32(IFF_LOOPBACK) == 0,
+              String(cString: a.ifa_name).hasPrefix("en") else { continue }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+            return String(cString: host)
+        }
     }
-
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: DeskLayers, context: Context) -> CGSize? {
-        CGSize(width: 460, height: 430)
-    }
+    return nil
 }
 
-final class DeskLayers: NSView {
-    var secret: (() -> Void)?
-    private enum Spot { case plant, mug }
-    private var taps: [(Spot, Date)] = []
-    private let steam = CAShapeLayer()
-    private let monitor = CALayer()
-    private let monitorScreen = CAGradientLayer()
-    private let monitorName = CATextLayer()
-    private let plant = CALayer()
-    private let armEdge = CAShapeLayer()
-    private let armFace = CAShapeLayer()
-    private let joints = CAShapeLayer()
-    private let glow = CAShapeLayer()
-    private let trail = CAShapeLayer()
-    private let spark = CALayer()
-    private var shown: (Mood, String, String)?
+// MARK: - Window
 
-    override var isFlipped: Bool { true }
-    /// the window has no title bar; the scene helps move it
-    override var mouseDownCanMoveWindow: Bool { true }
+struct SettingsView: View {
+    @StateObject private var core: Core
+    @State private var speed = 1.0
+    @State private var scroll = 3.0
+    @State private var editing = false
+    @State private var fineSpeed = false
+    @State private var fineScroll = false
+    @State private var confirmUnpair = false
+    @State private var menuIcon = Installer.menuEnabled
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        setAccessibilityElement(true)
-        setAccessibilityRole(.image)
-        build()
+    @MainActor init(core: Core? = nil) {
+        _core = StateObject(wrappedValue: core ?? Core())
     }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    // MARK: drawing helpers
-
-    private func c(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor { NSColor(hex: hex, alpha: alpha).cgColor }
-
-    @discardableResult
-    private func shape(_ path: CGPath, fill: CGColor?, stroke: CGColor? = nil, width: CGFloat = 1, in parent: CALayer) -> CAShapeLayer {
-        let l = CAShapeLayer()
-        l.path = path
-        l.fillColor = fill
-        l.strokeColor = stroke
-        l.lineWidth = width
-        l.lineCap = .round
-        l.lineJoin = .round
-        parent.addSublayer(l)
-        return l
-    }
-
-    @discardableResult
-    private func gradient(_ path: CGPath, _ colors: [UInt32], diagonal: Bool = false, horizontal: Bool = false,
-                          into g: CAGradientLayer = CAGradientLayer(), in parent: CALayer) -> CAGradientLayer {
-        let box = path.boundingBoxOfPath
-        g.frame = box
-        g.colors = colors.map { c($0) }
-        g.startPoint = .zero
-        g.endPoint = diagonal ? CGPoint(x: 1, y: 1) : horizontal ? CGPoint(x: 1, y: 0) : CGPoint(x: 0, y: 1)
-        let mask = CAShapeLayer()
-        var t = CGAffineTransform(translationX: -box.minX, y: -box.minY)
-        mask.path = path.copy(using: &t)
-        g.mask = mask
-        parent.addSublayer(g)
-        return g
-    }
-
-    /// A soft contact shadow under something standing on the desk.
-    private func contact(_ rect: CGRect, opacity: Float, radius: CGFloat = 6, in parent: CALayer) {
-        let l = CALayer()
-        l.shadowPath = CGPath(ellipseIn: rect, transform: nil)
-        l.shadowColor = c(0x8A6640)
-        l.shadowOpacity = opacity
-        l.shadowRadius = radius
-        l.shadowOffset = .zero
-        parent.addSublayer(l)
-    }
-
-    private func poly(_ pts: [(CGFloat, CGFloat)]) -> CGPath {
-        let p = CGMutablePath()
-        p.addLines(between: pts.map { CGPoint(x: $0.0, y: $0.1) })
-        p.closeSubpath()
-        return p
-    }
-
-    private func rr(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ r: CGFloat) -> CGPath {
-        CGPath(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerWidth: r, cornerHeight: r, transform: nil)
-    }
-
-    private func forever(_ a: CAAnimation) -> CAAnimation {
-        a.repeatCount = .infinity
-        a.isRemovedOnCompletion = false
-        return a
-    }
-
-    // MARK: the scene, back to front
-
-    private func build() {
-        guard let root = layer else { return }
-        root.backgroundColor = c(Clay.wall)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-
-        // window light on the wall, the skirting, the desk
-        shape(poly([(300, 0), (420, 0), (360, 262), (250, 262)]), fill: c(0xF5EEE3, 0.7), in: root)
-        shape(CGPath(rect: CGRect(x: 0, y: 252, width: 460, height: 10), transform: nil), fill: c(0xE3D8C8), in: root)
-        gradient(poly([(34, 262), (426, 262), (460, 372), (0, 372)]), [0xD9BC95, 0xCDAA7E], in: root)
-        let edge = CGMutablePath()
-        edge.move(to: CGPoint(x: 34, y: 262)); edge.addLine(to: CGPoint(x: 426, y: 262))
-        shape(edge, fill: nil, stroke: c(0xE9D3B2), width: 2, in: root)
-        let grain = CGMutablePath()
-        grain.move(to: CGPoint(x: 60, y: 290)); grain.addQuadCurve(to: CGPoint(x: 400, y: 292), control: CGPoint(x: 200, y: 284))
-        grain.move(to: CGPoint(x: 20, y: 330)); grain.addQuadCurve(to: CGPoint(x: 440, y: 334), control: CGPoint(x: 180, y: 322))
-        grain.move(to: CGPoint(x: 110, y: 352)); grain.addQuadCurve(to: CGPoint(x: 452, y: 356), control: CGPoint(x: 260, y: 346))
-        shape(grain, fill: nil, stroke: c(0xC49C6E, 0.45), width: 1.2, in: root)
-        shape(CGPath(rect: CGRect(x: 0, y: 372, width: 460, height: 58), transform: nil), fill: c(0xC29A6C), in: root)
-        shape(CGPath(rect: CGRect(x: 0, y: 372, width: 460, height: 3), transform: nil), fill: c(0xE3C79F), in: root)
-        shape(CGPath(rect: CGRect(x: 0, y: 424, width: 460, height: 6), transform: nil), fill: c(Clay.woodBand), in: root)
-
-        buildPlant(root)
-        buildArm(root)
-        buildMonitor(root)
-        buildMac(root)
-        buildMug(root)
-
-        // the wisp
-        glow.fillColor = nil
-        glow.strokeColor = c(Clay.tealGlow, 0.35)
-        glow.lineWidth = 10
-        glow.lineCap = .round
-        glow.shadowColor = c(Clay.tealGlow)
-        glow.shadowRadius = 6
-        glow.shadowOpacity = 0.8
-        glow.shadowOffset = .zero
-        root.addSublayer(glow)
-        trail.fillColor = nil
-        trail.strokeColor = c(Clay.teal)
-        trail.lineWidth = 3.5
-        trail.lineCap = .round
-        trail.lineDashPattern = [0.01, 9]
-        let march = CABasicAnimation(keyPath: "lineDashPhase")
-        march.fromValue = 0
-        march.toValue = -9.01
-        march.duration = 0.6
-        trail.add(forever(march), forKey: "march")
-        root.addSublayer(trail)
-        spark.bounds = CGRect(x: 0, y: 0, width: 6, height: 6)
-        spark.cornerRadius = 3
-        spark.backgroundColor = c(0xFFFFFF)
-        spark.shadowColor = c(0xE9FFFB)
-        spark.shadowRadius = 5
-        spark.shadowOpacity = 1
-        spark.shadowOffset = .zero
-        root.addSublayer(spark)
-        CATransaction.commit()
-    }
-
-    private func buildPlant(_ root: CALayer) {
-        plant.anchorPoint = .zero
-        plant.bounds = CGRect(x: -40, y: 0, width: 80, height: 320)
-        plant.position = CGPoint(x: 412 - 40, y: 0)
-        contact(CGRect(x: -26, y: 295, width: 52, height: 10), opacity: 0.35, in: plant)
-        let pot = CGMutablePath()
-        pot.move(to: CGPoint(x: -18, y: 262)); pot.addLine(to: CGPoint(x: 18, y: 262)); pot.addLine(to: CGPoint(x: 14, y: 298))
-        pot.addQuadCurve(to: CGPoint(x: -14, y: 298), control: CGPoint(x: 0, y: 302)); pot.closeSubpath()
-        gradient(pot, [0xD98463, 0xB9654A], horizontal: true, in: plant)
-        shape(rr(-20, 258, 40, 8, 3), fill: c(0xE39572), in: plant)
-        let leaf = { (pts: [CGFloat], color: UInt32) in
-            let p = CGMutablePath()
-            p.move(to: CGPoint(x: 0, y: 258))
-            p.addCurve(to: CGPoint(x: pts[4], y: pts[5]), control1: CGPoint(x: pts[0], y: pts[1]), control2: CGPoint(x: pts[2], y: pts[3]))
-            p.addCurve(to: CGPoint(x: 0, y: 258), control1: CGPoint(x: pts[6], y: pts[7]), control2: CGPoint(x: pts[8], y: pts[9]))
-            self.shape(p, fill: self.c(color), in: self.plant)
-        }
-        leaf([-4, 236, -26, 226, -30, 206, -12, 210, -2, 228], 0x6FAE7E)
-        leaf([4, 230, 22, 218, 30, 196, 34, 218, 14, 236], 0x5C9C6C)
-        leaf([-2, 228, 6, 206, 2, 184, 14, 204, 10, 232], 0x7DBE8A)
-        root.addSublayer(plant)
-    }
-
-    /// The monitor arm: clamped to the back edge of the desk and never moving from
-    /// there; its elbow bends to reach the monitor wherever it stands.
-    static let armBase = CGPoint(x: 330, y: 248)
-    static let upperArm: CGFloat = 135, forearm: CGFloat = 125
-
-    /// Where the elbow sits for the monitor's mount point: two-link reach, elbow up.
-    static func elbow(to mount: CGPoint) -> CGPoint {
-        let b = armBase
-        let dx = mount.x - b.x, dy = mount.y - b.y
-        let d = min(max(hypot(dx, dy), abs(upperArm - forearm) + 1), upperArm + forearm - 1)
-        let a = (upperArm * upperArm - forearm * forearm + d * d) / (2 * d)
-        let h = sqrt(max(0, upperArm * upperArm - a * a))
-        let ux = dx / hypot(dx, dy), uy = dy / hypot(dx, dy)
-        let px = b.x + a * ux, py = b.y + a * uy
-        let e1 = CGPoint(x: px - h * uy, y: py + h * ux), e2 = CGPoint(x: px + h * uy, y: py - h * ux)
-        return e1.y < e2.y ? e1 : e2
-    }
-
-    static func armPath(_ stage: Stage) -> CGPath {
-        let mount = mount(stage)
-        let p = CGMutablePath()
-        p.move(to: armBase)
-        p.addLine(to: elbow(to: mount))
-        p.addLine(to: mount)
-        return p
-    }
-
-    private func buildArm(_ root: CALayer) {
-        let b = Self.armBase
-        contact(CGRect(x: b.x - 16, y: b.y + 18, width: 32, height: 6), opacity: 0.35, radius: 3, in: root)
-        gradient(rr(b.x - 11, b.y + 6, 22, 16, 3), [0xD2D6DC, 0xAEB4BC], in: root)
-        shape(rr(b.x - 4, b.y - 2, 8, 12, 2), fill: c(0xC7CCD2), in: root)
-        for (l, w, color) in [(armEdge, CGFloat(9), UInt32(0xAEB4BC)), (armFace, CGFloat(6), UInt32(0xE2E5E9))] {
-            l.fillColor = nil
-            l.strokeColor = c(color)
-            l.lineWidth = w
-            l.lineCap = .round
-            l.lineJoin = .round
-            root.addSublayer(l)
-        }
-        // the two joints are part of the same kind of path as the arm, so they move as one
-        joints.fillColor = c(0xD2D6DC)
-        joints.strokeColor = c(0xAEB4BC)
-        joints.lineWidth = 1.3
-        root.addSublayer(joints)
-    }
-
-    static func jointPath(_ stage: Stage) -> CGPath {
-        let p = CGMutablePath()
-        for q in [armBase, elbow(to: mount(stage))] {
-            p.addEllipse(in: CGRect(x: q.x - 5.5, y: q.y - 5.5, width: 11, height: 11))
-        }
-        return p
-    }
-
-    static func mount(_ stage: Stage) -> CGPoint {
-        CGPoint(x: stage.monitor.x + 84 * stage.scale, y: stage.monitor.y + 52 * stage.scale)
-    }
-
-    private func buildMonitor(_ root: CALayer) {
-        monitor.anchorPoint = .zero
-        monitor.bounds = CGRect(x: 0, y: 0, width: 168, height: 110)
-        monitor.position = CGPoint(x: 146, y: 94)
-        // held from behind by the desk arm (buildArm)
-        let hang = CALayer()
-        hang.shadowPath = CGPath(roundedRect: CGRect(x: 6, y: 10, width: 156, height: 96), cornerWidth: 10, cornerHeight: 10, transform: nil)
-        hang.shadowColor = c(0x6B5236)
-        hang.shadowOpacity = 0.28
-        hang.shadowRadius = 10
-        hang.shadowOffset = CGSize(width: 0, height: 6)
-        monitor.addSublayer(hang)
-        gradient(rr(0, 0, 168, 104, 10), [0xEEF0F3, 0xD2D6DC], in: monitor)
-        shape(rr(5, 5, 158, 94, 6), fill: c(0x1F242B), in: monitor)
-        gradient(rr(9, 9, 150, 86, 3), [0x8FE0D3, 0x2F8F84], into: monitorScreen, in: monitor)
-        let hills = CGMutablePath()
-        hills.move(to: CGPoint(x: 9, y: 72))
-        hills.addQuadCurve(to: CGPoint(x: 90, y: 70), control: CGPoint(x: 50, y: 58))
-        hills.addQuadCurve(to: CGPoint(x: 159, y: 64), control: CGPoint(x: 130, y: 82))
-        hills.addLine(to: CGPoint(x: 159, y: 95)); hills.addLine(to: CGPoint(x: 9, y: 95)); hills.closeSubpath()
-        shape(hills, fill: c(0xFFFFFF, 0.16), in: monitor)
-        shape(CGPath(rect: CGRect(x: 9, y: 87, width: 150, height: 8), transform: nil), fill: c(0x000000, 0.22), in: monitor)
-        shape(rr(78, 89, 12, 4, 1), fill: c(0xFFFFFF, 0.7), in: monitor)
-        let shine = CGMutablePath()
-        shine.move(to: CGPoint(x: 12, y: 12)); shine.addLine(to: CGPoint(x: 60, y: 12))
-        shape(shine, fill: nil, stroke: c(0xFFFFFF, 0.25), width: 2, in: monitor)
-        monitorName.frame = CGRect(x: 9, y: 34, width: 150, height: 24)
-        monitorName.alignmentMode = .center
-        monitorName.font = Fonts.round(18)
-        monitorName.fontSize = 18
-        monitorName.foregroundColor = c(0xFFFFFF, 0.95)
-        monitorName.contentsScale = 2
-        monitorName.truncationMode = .end
-        monitor.addSublayer(monitorName)
-        root.addSublayer(monitor)
-    }
-
-    private func buildMac(_ root: CALayer) {
-        contact(CGRect(x: 140, y: 353, width: 180, height: 14), opacity: 0.4, in: root)
-        gradient(rr(166, 234, 128, 96, 9), [0xEEF0F3, 0xD2D6DC], in: root)
-        shape(rr(170, 238, 120, 88, 6), fill: c(0x1F242B), in: root)
-        gradient(rr(174, 243, 112, 79, 3), [0xF2C9A0, 0xC98D7A], diagonal: true, in: root)
-        shape(CGPath(rect: CGRect(x: 174, y: 243, width: 112, height: 5), transform: nil), fill: c(0xFFFFFF, 0.35), in: root)
-        let wave = CGMutablePath()
-        wave.move(to: CGPoint(x: 174, y: 300))
-        wave.addQuadCurve(to: CGPoint(x: 240, y: 296), control: CGPoint(x: 210, y: 282))
-        wave.addQuadCurve(to: CGPoint(x: 286, y: 290), control: CGPoint(x: 270, y: 306))
-        wave.addLine(to: CGPoint(x: 286, y: 322)); wave.addLine(to: CGPoint(x: 174, y: 322)); wave.closeSubpath()
-        shape(wave, fill: c(0xFFFFFF, 0.18), in: root)
-        shape(CGPath(ellipseIn: CGRect(x: 228.8, y: 239.3, width: 2.4, height: 2.4), transform: nil), fill: c(0x55606C), in: root)
-
-        // the base: as wide as the lid at the hinge, a little wider at the front
-        let (top, bot): (CGFloat, CGFloat) = (330, 354)
-        let (tl, tr, bl, br): (CGFloat, CGFloat, CGFloat, CGFloat) = (166, 294, 152, 308)
-        func edge(_ y: CGFloat) -> (CGFloat, CGFloat) {
-            let t = (y - top) / (bot - top)
-            return (tl + (bl - tl) * t, tr + (br - tr) * t)
-        }
-        gradient(poly([(tl, top), (tr, top), (br, bot), (bl, bot)]), [0xE2E5E9, 0xC7CCD2], in: root)
-        shape(poly([(bl, bot), (br, bot), (br - 2.5, bot + 4.5), (bl + 2.5, bot + 4.5)]), fill: c(0xAEB4BC), in: root)
-        let m: CGFloat = 8.5
-        let (w0, w1): (CGFloat, CGFloat) = (331.4, 343.6)
-        let (l0, r0) = edge(w0), (l1, r1) = edge(w1)
-        shape(poly([(l0 + m - 1, w0), (r0 - m + 1, w0), (r1 - m + 1, w1), (l1 + m - 1, w1)]), fill: c(0xB3B9C1), in: root)
-        let rows: [(CGFloat, CGFloat, [CGFloat])] = [
-            (332.1, 2.2, Array(repeating: 1, count: 13)),
-            (334.9, 2.4, [1.4] + Array(repeating: 1, count: 11) + [1.4]),
-            (337.9, 2.5, [1.8] + Array(repeating: 1, count: 10) + [1.8]),
-            (341.0, 2.5, [1.2, 1, 1.2, 6.2, 1.2, 1, 1.2]),
-        ]
-        let keys = CGMutablePath(), tops = CGMutablePath()
-        for (y, h, units) in rows {
-            let (la, ra) = edge(y), (lb, rb) = edge(y + h)
-            let l = (la + lb) / 2 + m, r = (ra + rb) / 2 - m
-            let gap: CGFloat = 0.8
-            let unit = (r - l - gap * CGFloat(units.count - 1)) / units.reduce(0, +)
-            var x = l
-            for u in units {
-                let w = unit * u
-                keys.addRoundedRect(in: CGRect(x: x, y: y, width: w, height: h), cornerWidth: 0.6, cornerHeight: 0.6)
-                tops.addRect(CGRect(x: x + 0.3, y: y, width: w - 0.6, height: 0.55))
-                x += w + gap
-            }
-        }
-        shape(keys, fill: c(0x2E333A), in: root)
-        shape(tops, fill: c(0xFFFFFF, 0.14), in: root)
-        shape(poly([(210, 345.2), (250, 345.2), (252, 352.4), (208, 352.4)]), fill: c(0xD5D9DE), stroke: c(0xB9BEC5), width: 0.6, in: root)
-    }
-
-    private func buildMug(_ root: CALayer) {
-        let s = CGMutablePath()
-        s.move(to: CGPoint(x: 92, y: 318)); s.addCurve(to: CGPoint(x: 92, y: 292), control1: CGPoint(x: 86, y: 308), control2: CGPoint(x: 98, y: 302))
-        s.move(to: CGPoint(x: 102, y: 316)); s.addCurve(to: CGPoint(x: 102, y: 290), control1: CGPoint(x: 96, y: 306), control2: CGPoint(x: 108, y: 300))
-        steam.path = s
-        steam.fillColor = nil
-        steam.strokeColor = c(0xFFFFFF, 0.7)
-        steam.lineWidth = 2.5
-        steam.lineCap = .round
-        let rise = CABasicAnimation(keyPath: "transform.translation.y")
-        rise.fromValue = 0
-        rise.toValue = -5
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0.9
-        fade.toValue = 0.35
-        let both = CAAnimationGroup()
-        both.animations = [rise, fade]
-        both.duration = 1.5
-        both.autoreverses = true
-        both.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        steam.add(forever(both), forKey: "steam")
-        root.addSublayer(steam)
-        contact(CGRect(x: 75, y: 351, width: 44, height: 10), opacity: 0.35, in: root)
-        let cup = CGMutablePath()
-        cup.move(to: CGPoint(x: 80, y: 324)); cup.addLine(to: CGPoint(x: 114, y: 324)); cup.addLine(to: CGPoint(x: 111, y: 354))
-        cup.addQuadCurve(to: CGPoint(x: 83, y: 354), control: CGPoint(x: 97, y: 358)); cup.closeSubpath()
-        shape(cup, fill: c(Clay.clay), in: root)
-        shape(CGPath(ellipseIn: CGRect(x: 80, y: 320, width: 34, height: 8), transform: nil), fill: c(0x7A5236), in: root)
-        let handle = CGMutablePath()
-        handle.move(to: CGPoint(x: 113, y: 330)); handle.addCurve(to: CGPoint(x: 111, y: 346), control1: CGPoint(x: 124, y: 330), control2: CGPoint(x: 124, y: 346))
-        shape(handle, fill: nil, stroke: c(Clay.clay), width: 4, in: root)
-    }
-
-    // MARK: state
-
-    func showBridge(_ on: Bool) {
-        let color = on ? c(Clay.tealGlow, 0.95) : c(0xFFFFFF, 0.7)
-        guard steam.strokeColor != color else { return }
-        steam.strokeColor = color
-    }
-
-    /// Clicks on the plant and the mug feed the hidden switch; any other press, or a drag,
-    /// moves the window as before.
-    override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        let origin = window?.frame.origin
-        window?.performDrag(with: event)
-        guard secret != nil, window?.frame.origin == origin else { return }
-        let plantBox = CGRect(x: plant.position.x, y: 180, width: 80, height: 125)
-        let mugBox = CGRect(x: 72, y: 284, width: 56, height: 78)
-        let spot: Spot? = plantBox.contains(p) ? .plant : mugBox.contains(p) ? .mug : nil
-        guard let spot else { taps.removeAll(); return }
-        taps.append((spot, Date()))
-        taps = Array(taps.suffix(3)).filter { Date().timeIntervalSince($0.1) < 3 }
-        if taps.map(\.0) == [.plant, .plant, .mug] {
-            taps.removeAll()
-            secret?()
-        }
-    }
-
-    func show(mood: Mood, edge: String, name: String) {
-        let first = shown == nil
-        if let shown, shown == (mood, edge, name) { return }
-        let movedEdge = shown?.1 != edge
-        shown = (mood, edge, name)
-        let stage = Stage.of(edge)
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        monitorName.string = name.isEmpty ? "?" : name
-        let screen: [UInt32] = switch mood {
-        case .connected: [0x8FE0D3, 0x2F8F84]
-        case .paused: [0xC9BFB4, 0x8E8276]
-        default: [0xF5D79A, 0xC9923A]
-        }
-        monitorScreen.colors = screen.map { c($0) }
-        CATransaction.commit()
-
-        // the other computer: faint until paired, gone while the code is up
-        let opacity: Float = switch mood {
-        case .pairing: 0
-        case .unpaired: 0.3
-        default: 1
-        }
-        fade(monitor, to: opacity)
-
-        let target = CATransform3DMakeScale(stage.scale, stage.scale, 1)
-        if first || !movedEdge {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            monitor.position = stage.monitor
-            monitor.transform = target
-            plant.position = CGPoint(x: stage.plantX - 40, y: 0)
-            armEdge.path = Self.armPath(stage)
-            armFace.path = armEdge.path
-            joints.path = Self.jointPath(stage)
-            CATransaction.commit()
-        } else {
-            // one curve for all of it, with no overshoot: a path cannot overshoot, so a
-            // springy screen would come loose from the arm holding it
-            for (l, path) in [(armEdge, Self.armPath(stage)), (armFace, Self.armPath(stage)), (joints, Self.jointPath(stage))] {
-                glide(l, "path", from: l.presentation()?.path ?? l.path as Any, to: path)
-                l.path = path
-            }
-            glide(monitor, "position", from: monitor.presentation()?.position ?? monitor.position, to: stage.monitor)
-            glide(monitor, "transform", from: monitor.presentation()?.transform ?? monitor.transform, to: target)
-            glide(plant, "position", from: plant.presentation()?.position ?? plant.position, to: CGPoint(x: stage.plantX - 40, y: 0))
-            monitor.position = stage.monitor
-            monitor.transform = target
-            plant.position = CGPoint(x: stage.plantX - 40, y: 0)
-        }
-
-        // the wisp only while connected
-        let live = mood == .connected
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if movedEdge && !first {
-            for l in [glow, trail] {
-                glide(l, "path", from: l.presentation()?.path ?? l.path as Any, to: stage.trail)
-            }
-        }
-        glow.path = stage.trail
-        trail.path = stage.trail
-        CATransaction.commit()
-        fade(glow, to: live ? 1 : 0)
-        fade(trail, to: live ? 1 : 0)
-        fade(spark, to: live ? 1 : 0)
-        let ride = CAKeyframeAnimation(keyPath: "position")
-        ride.path = stage.trail
-        ride.calculationMode = .paced
-        ride.duration = 1.8
-        spark.add(forever(ride), forKey: "ride")
-    }
-
-    private func fade(_ l: CALayer, to opacity: Float) {
-        guard l.opacity != opacity else { return }
-        let a = CABasicAnimation(keyPath: "opacity")
-        a.fromValue = l.presentation()?.opacity ?? l.opacity
-        a.toValue = opacity
-        a.duration = 0.35
-        l.add(a, forKey: "fade")
-        l.opacity = opacity
-    }
-
-    private func glide(_ l: CALayer, _ key: String, from: Any, to: Any) {
-        let a = CABasicAnimation(keyPath: key)
-        a.fromValue = from
-        a.toValue = to
-        a.duration = 0.6
-        a.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-        l.add(a, forKey: key)
-    }
-}
-
-// MARK: - On the wall
-
-/// The sign on the wall: what is going on, or the pairing code as six clay keycaps.
-struct WallSign: View {
-    let s: Status?
-    let problem: String?
-    @State private var dropped = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(Color(hex: mood?.dot ?? Clay.inkSoft))
-                    .frame(width: 10, height: 10)
-                    .background(Circle().fill(Color(hex: mood?.dot ?? Clay.inkSoft, opacity: 0.2)).frame(width: 18, height: 18))
-                Text(title).font(.system(size: 18, weight: .semibold)).foregroundStyle(Color(hex: Clay.ink))
+        let s = core.status
+        let mood = s.map(Mood.init)
+        VStack(spacing: 0) {
+            header(s, mood)
+            Rule()
+            stage(s, mood)
+                .frame(height: 214)
+            Rule()
+            if let s, !s.paired.isEmpty, mood != .pairing {
+                feel(s)
             }
-            if let s, mood == .pairing {
-                code(s)
-            } else {
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(problem == nil ? Color(hex: Clay.inkSoft) : Color(hex: Clay.red))
-                    .padding(.leading, 20)
-                    .frame(maxWidth: 260, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let open = s?.bridge, open > 0 {
-                Text("开发者通道已开启")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color(hex: Clay.teal))
-                    .padding(.leading, 20)
-            }
+            Spacer(minLength: 0)
+            footer(s)
         }
-        .animation(.easeOut(duration: 0.3), value: mood)
+        // below the title bar, which holds only the traffic lights
+        .frame(width: 400, height: 500 + (fineSpeed ? 34 : 0) + (fineScroll ? 34 : 0))
+        .background(Color(Ink.paper))
+        .background(WindowPaper())
+        .foregroundStyle(Color(Ink.text))
+        .onChange(of: core.status) { _, s in
+            guard let s, !editing else { return }
+            speed = s.speed
+            scroll = s.scroll
+        }
     }
 
-    private var mood: Mood? { s.map(Mood.init) }
+    // MARK: top
 
-    private var title: String {
-        guard let s, let mood else { return problem == nil ? "正在连接 Wisp…" : "Wisp 没有在运行" }
+    private func header(_ s: Status?, _ mood: Mood?) -> some View {
+        HStack(alignment: .bottom, spacing: 16) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 8) {
+                    Circle().fill(Color(dot(mood, s))).frame(width: 7, height: 7)
+                    Text(label(mood, s)).font(.system(size: 12)).tracking(1).foregroundStyle(Color(dot(mood, s)))
+                }
+                Text(headline(mood, s))
+                    .font(.serif(30))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .padding(.top, 8)
+                Text(detail(mood, s))
+                    // figures in the monospaced face; Chinese sentences in the plain one
+                    .font(mood == .connected ? .mono(12) : .system(size: 12))
+                    .foregroundStyle(Color(Ink.soft))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+                if let problem = core.problem, s != nil {
+                    Text(problem).font(.system(size: 12)).foregroundStyle(Color(Ink.rust)).padding(.top, 6)
+                }
+            }
+            Spacer(minLength: 0)
+            if let action = primary(mood, s) {
+                Button(action.title, action: action.run).buttonStyle(Outline())
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 2)
+        .padding(.bottom, 20)
+        .animation(.easeOut(duration: 0.25), value: mood)
+    }
+
+    private func dot(_ mood: Mood?, _ s: Status?) -> NSColor {
+        switch mood {
+        case .connected: Ink.celadon
+        case .searching, .paused, .pairing: Ink.ochre
+        case .unpaired, nil: s == nil && core.problem != nil ? Ink.rust : Ink.faint
+        }
+    }
+
+    private func label(_ mood: Mood?, _ s: Status?) -> String {
+        guard let mood else { return core.problem == nil ? "正在打开" : "没有在运行" }
         return switch mood {
-        case .connected: "已连接 \(s.paired)"
-        case .searching: "等待 \(s.paired) 连接"
-        case .unpaired: "还没有配对"
+        case .connected: "已连接"
+        case .searching: "正在寻找"
         case .paused: "已暂停切屏"
+        case .unpaired: "还没有配对"
+        case .pairing: "等待配对"
+        }
+    }
+
+    private func headline(_ mood: Mood?, _ s: Status?) -> String {
+        guard let s, let mood else { return "Wisp" }
+        return switch mood {
+        case .connected, .searching, .paused: s.paired
+        case .unpaired: "配对一台电脑"
         case .pairing: "配对码"
         }
     }
 
-    private var detail: String {
-        if problem == "Wisp 没有在运行" { return "重新打开 Wisp 即可启动" }
-        if let problem { return problem }
-        guard let s, let mood else { return "" }
+    private func detail(_ mood: Mood?, _ s: Status?) -> String {
+        guard let s, let mood else { return core.problem == nil ? "" : "点右边的按钮启动它" }
+        switch mood {
+        case .connected: return "\(s.peer) · \(s.screen.replacingOccurrences(of: " ", with: ""))"
+        case .paused: return "光标不会切过去；Wisp 重启后自动恢复"
+        case .searching:
+            guard let drop = s.drop else { return "等它在局域网里出现" }
+            return "已经找了 \(since(drop.at))"
+        case .unpaired: return "让这台 Mac 的键盘和触控板控制另一台电脑"
+        case .pairing: return "在 Windows 上的 Wisp 里输入下面 6 位数字"
+        }
+    }
+
+    private struct Action { let title: String; let run: () -> Void }
+
+    private func primary(_ mood: Mood?, _ s: Status?) -> Action? {
+        guard let mood else { return core.problem == nil ? nil : Action(title: "启动 Wisp") { core.start() } }
         return switch mood {
-        case .connected: "\(s.peer) · \(s.screen)"
-        case .searching: "确认那台电脑上的 Wisp 在运行，并且在同一个局域网"
-        case .unpaired: "点下面的“配对新电脑”，再到 Windows 上的 Wisp 里输入配对码"
-        case .paused: "光标不会切到 \(s.paired)；Wisp 重启后自动恢复"
-        case .pairing: ""
+        case .connected: Action(title: "暂停切屏") { core.send(["pause"]) }
+        case .paused: Action(title: "恢复切屏") { core.send(["resume"]) }
+        case .unpaired: Action(title: "配对新电脑") { core.send(["pair"]) }
+        case .pairing: Action(title: "取消") { core.send(["pair-cancel"]) }
+        case .searching: nil
         }
     }
 
-    private func code(_ s: Status) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 7) {
-                ForEach(Array(s.code.enumerated()), id: \.offset) { i, ch in
-                    Text(String(ch))
-                        .font(.round(24))
-                        .foregroundStyle(Color(hex: Clay.ink))
-                        .frame(width: 38, height: 44)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color(hex: Clay.clay).shadow(.inner(color: Color(hex: Clay.clayShade), radius: 0, y: -5)))
-                                .shadow(color: Color(hex: Clay.clayDrop), radius: 0, y: 5)
-                                .shadow(color: Color(hex: 0x462D14, opacity: 0.25), radius: 7, y: 9)
-                        )
-                        .padding(.leading, i == 3 ? 10 : 0)
-                        .offset(y: dropped ? 0 : -22)
-                        .opacity(dropped ? 1 : 0)
-                        .animation(.spring(response: 0.45, dampingFraction: 0.55).delay(Double(i) * 0.07), value: dropped)
-                }
+    // MARK: middle
+
+    @ViewBuilder private func stage(_ s: Status?, _ mood: Mood?) -> some View {
+        switch mood {
+        case .connected, .paused:
+            Arrangement(edge: s?.edge ?? "top", name: s?.paired ?? "", live: mood == .connected) { core.send(["set", "edge=\($0)"]) }
+        case .searching:
+            if let s { Checklist(s: s) }
+        case .pairing:
+            if let s { PairingCode(s: s) }
+        case .unpaired:
+            VStack(spacing: 14) {
+                Text("先在另一台电脑上装好 Wisp，再点上面的“配对新电脑”。")
+                Text("两台电脑要在同一个局域网里。")
             }
-            .accessibilityElement()
-            .accessibilityLabel(Text("配对码 " + s.code.map(String.init).joined(separator: " ")))
-            Text("在 Windows 上的 Wisp 里输入 · 还剩 \(s.codeSecondsLeft / 60):\(String(format: "%02d", s.codeSecondsLeft % 60)) · 还可以输错 \(s.codeTriesLeft) 次")
-                .font(.system(size: 12))
-                .monospacedDigit()
-                .foregroundStyle(Color(hex: Clay.inkSoft))
-        }
-        .padding(.top, 6)
-        .onAppear { dropped = true }
-        .onChange(of: s.code) { _, _ in
-            dropped = false
-            DispatchQueue.main.async { dropped = true }
+            .font(.system(size: 13))
+            .foregroundStyle(Color(Ink.soft))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 40)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case nil:
+            Text(core.problem == nil ? "" : "Wisp 的后台没有在运行，键盘和触控板不会切到另一台电脑。")
+                .font(.system(size: 13)).foregroundStyle(Color(Ink.soft))
+                .multilineTextAlignment(.center).padding(.horizontal, 40)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
-}
 
-// MARK: - The drawer front
+    // MARK: the feel
 
-/// Where the other screen stands, picked in a tray carved into the drawer: a tiny Mac
-/// in the middle and three places around it; the tiny monitor springs to the one picked.
-struct LayoutTray: View {
-    let edge: String
-    let pick: (String) -> Void
-    @Namespace private var space
-
-    private let slots: [(id: String, word: String, x: CGFloat, y: CGFloat)] = [
-        ("top", "上方", 158, 6), ("left", "左侧", 30, 40), ("right", "右侧", 286, 40),
-    ]
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(hex: Clay.tray).shadow(.inner(color: Color(hex: 0x3C230A, opacity: 0.45), radius: 5, y: 5)))
-                .shadow(color: Color(hex: 0xFFEBCD, opacity: 0.25), radius: 0, y: 1)
-            MiniMac().offset(x: 206 - 38, y: 62)
-            ForEach(slots, id: \.id) { slot in
-                Slot(word: slot.word, on: edge == slot.id, space: space) { pick(slot.id) }
-                    .offset(x: slot.x, y: slot.y)
-            }
+    private func feel(_ s: Status) -> some View {
+        VStack(spacing: 0) {
+            stepRow("鼠标速度", steps: .speed, value: $speed, fine: $fineSpeed, key: "speed")
+            Rule().padding(.horizontal, 28)
+            stepRow("滚动速度", steps: .scroll, value: $scroll, fine: $fineScroll, key: "scroll")
         }
-        .frame(height: 124)
-        .animation(.spring(response: 0.45, dampingFraction: 0.62), value: edge)
+        .padding(.top, 4)
+        .disabled(s.paired.isEmpty)
     }
 
-    private struct Slot: View {
-        let word: String
-        let on: Bool
-        let space: Namespace.ID
-        let pick: () -> Void
-        @State private var hover = false
-
-        var body: some View {
-            Button(action: pick) {
-                VStack(spacing: 4) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(Color(hex: 0xFFF0D7, opacity: hover ? 0.85 : 0.45), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
-                            .offset(y: hover && !on ? -2 : 0)
-                        if on {
-                            ClayMonitor().matchedGeometryEffect(id: "monitor", in: space)
+    private func stepRow(_ title: String, steps: Steps, value: Binding<Double>, fine: Binding<Bool>, key: String) -> some View {
+        let picked = fine.wrappedValue ? 3 : steps.index(value.wrappedValue)
+        return VStack(spacing: 0) {
+            HStack(spacing: 18) {
+                Text(title).font(.system(size: 14))
+                Spacer()
+                ForEach(Array(["慢", "适中", "快", "细调"].enumerated()), id: \.offset) { i, word in
+                    Button {
+                        if i == 3 {
+                            fine.wrappedValue.toggle()
+                        } else {
+                            fine.wrappedValue = false
+                            let v = [steps.slow, steps.middle, steps.fast][i]
+                            value.wrappedValue = v
+                            core.send(["set", "\(key)=\(v)"])
                         }
+                    } label: {
+                        Text(word)
+                            .font(.system(size: 13, weight: picked == i ? .medium : .regular))
+                            .foregroundStyle(Color(picked == i ? Ink.text : Ink.faint))
+                            .padding(.bottom, 3)
+                            .overlay(alignment: .bottom) {
+                                if picked == i { Rectangle().fill(Color(Ink.text)).frame(height: 1.5) }
+                            }
+                            .contentShape(Rectangle())
                     }
-                    .frame(width: 52, height: 34)
-                    Text(word).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color(hex: 0xF6EBDD, opacity: 0.85))
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(picked == i ? .isSelected : [])
+                    .accessibilityLabel(Text("\(title)\(word)"))
                 }
-                .frame(width: 96, height: 58)
-                .contentShape(Rectangle())
             }
+            .frame(height: 52)
+            if picked == 3 {
+                HStack(spacing: 14) {
+                    Hairslider(value: value, range: steps.range, step: steps.step) { on in
+                        editing = on
+                        if !on { core.send(["set", "\(key)=\(value.wrappedValue)"]) }
+                    }
+                    .accessibilityLabel(Text(title))
+                    Text(steps.unit(value.wrappedValue)).font(.mono(12)).foregroundStyle(Color(Ink.soft))
+                        .frame(width: 52, alignment: .trailing)
+                }
+                .padding(.bottom, 14)
+            }
+        }
+        .padding(.horizontal, 28)
+    }
+
+    // MARK: bottom
+
+    private func footer(_ s: Status?) -> some View {
+        HStack {
+            if let open = s?.bridge, open > 0 {
+                Text("开发者通道 · 开").font(.system(size: 12)).foregroundStyle(Color(Ink.soft))
+            }
+            Spacer()
+            Menu {
+                Toggle("菜单栏图标（约多占 10 MB 内存）", isOn: Binding(get: { menuIcon }, set: { on in
+                    menuIcon = on
+                    Task.detached { Installer.setMenu(on) }
+                }))
+                // only a developer build's core reports the field (RULES.md X1, X2)
+                if let open = s?.bridge {
+                    Toggle("开发者通道", isOn: Binding(get: { open > 0 }, set: { core.send(["bridge", $0 ? "on" : "off"]) }))
+                }
+                if let s, !s.paired.isEmpty {
+                    Divider()
+                    Button("配对另一台电脑…") { core.send(["pair"]) }
+                    Button("解除与 \(s.paired) 的配对…", role: .destructive) { confirmUnpair = true }
+                }
+                Divider()
+                Button("退出 Wisp") { core.quit() }
+            } label: {
+                Text("···").font(.system(size: 16, weight: .semibold)).tracking(2)
+            }
+            .menuStyle(.button)
             .buttonStyle(.plain)
-            .onHover { h in withAnimation(.easeOut(duration: 0.15)) { hover = h } }
-            .accessibilityLabel(Text("另一台屏幕在\(word)"))
-            .accessibilityAddTraits(on ? .isSelected : [])
-        }
-    }
-}
-
-struct ClayMonitor: View {
-    var body: some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(Color(hex: 0xE3E6EA))
-            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color(hex: Clay.teal)).padding(4))
-            .shadow(color: Color(hex: 0xA9AEB5), radius: 0, y: 5)
-            .shadow(color: Color(hex: 0x321C08, opacity: 0.35), radius: 5, y: 8)
-            .frame(width: 52, height: 34)
-    }
-}
-
-struct MiniMac: View {
-    var body: some View {
-        ZStack(alignment: .top) {
-            Ellipse().fill(Color(hex: 0x7E5D38, opacity: 0.55)).frame(width: 96, height: 12).blur(radius: 2).offset(y: 37)
-            RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color(hex: 0xE3E6EA)).frame(width: 56, height: 36)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 3, style: .continuous).fill(Color(hex: 0x36404D)).padding(4)
-                        .overlay(Text("Mac").font(.round(9)).foregroundStyle(.white.opacity(0.8)))
-                )
-            Path { p in
-                p.move(to: CGPoint(x: 0, y: 0)); p.addLine(to: CGPoint(x: 76, y: 0))
-                p.addLine(to: CGPoint(x: 72, y: 8)); p.addLine(to: CGPoint(x: 4, y: 8)); p.closeSubpath()
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel(Text("更多"))
+            .confirmationDialog("解除与 \(s?.paired ?? "") 的配对？", isPresented: $confirmUnpair) {
+                Button("解除配对", role: .destructive) { core.send(["unpair"]) }
+            } message: {
+                Text("这台 Mac 会断开与它的连接，以后要再用就得重新配对。")
             }
-            .fill(Color(hex: 0xD3D7DC))
-            .frame(width: 76, height: 8)
-            .offset(y: 36)
         }
-        .frame(width: 76, height: 46)
+        .padding(.horizontal, 28)
+        .padding(.top, 12)
+        .padding(.bottom, 16)
+    }
+}
+
+/// "3 分钟", "1 小时 5 分钟" since a unix time.
+func since(_ at: Date) -> String {
+    let secs = max(0, Int(Date().timeIntervalSince(at)))
+    switch secs {
+    case ..<60: return "不到 1 分钟"
+    case ..<3600: return "\(secs / 60) 分钟"
+    default: return "\(secs / 3600) 小时 \(secs % 3600 / 60) 分钟"
+    }
+}
+
+// MARK: - Pieces
+
+struct Rule: View {
+    var body: some View { Rectangle().fill(Color(Ink.rule)).frame(height: 1) }
+}
+
+/// A pill drawn with one ink line; filled with ink while pressed.
+struct Outline: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 16)
+            .frame(height: 32)
+            .foregroundStyle(Color(configuration.isPressed ? Ink.paper : Ink.text))
+            .background(Capsule().fill(Color(configuration.isPressed ? Ink.text : .clear)))
+            .overlay(Capsule().strokeBorder(Color(Ink.text), lineWidth: 1))
+            .contentShape(Capsule())
+    }
+}
+
+/// Where the other screen stands, drawn in line: the Mac in the middle, the screen
+/// above, left or right of it. Drag the screen to another place, or click a place.
+struct Arrangement: View {
+    let edge: String
+    let name: String
+    /// connected and not paused: the smoke is drawn in colour
+    let live: Bool
+    let pick: (String) -> Void
+    @State private var drag: CGSize = .zero
+    @State private var hover: String?
+
+    private static let slots: [String: CGRect] = [
+        "top": CGRect(x: 150, y: 16, width: 100, height: 64),
+        "left": CGRect(x: 34, y: 92, width: 100, height: 64),
+        "right": CGRect(x: 266, y: 92, width: 100, height: 64),
+    ]
+    private let mac = CGRect(x: 160, y: 110, width: 80, height: 50)
+
+    var body: some View {
+        let at = Self.slots[edge] ?? Self.slots["top"]!
+        let screen = at.offsetBy(dx: drag.width, dy: drag.height)
+        ZStack(alignment: .topLeading) {
+            ForEach(["top", "left", "right"].filter { $0 != edge }, id: \.self) { slot in
+                let r = Self.slots[slot]!
+                Button { pick(slot) } label: {
+                    RoundedRectangle(cornerRadius: 3)
+                        .strokeBorder(Color(hover == slot || nearest(screen) == slot && drag != .zero ? Ink.soft : Ink.ghost),
+                                      style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                        .overlay(Text(slot == "left" ? "左侧" : slot == "right" ? "右侧" : "上方")
+                            .font(.system(size: 11)).foregroundStyle(Color(Ink.faint)))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { hover = $0 ? slot : nil }
+                .frame(width: r.width, height: r.height)
+                .offset(x: r.minX, y: r.minY)
+                .accessibilityLabel(Text("把\(name)放到\(slot == "left" ? "左侧" : slot == "right" ? "右侧" : "上方")"))
+            }
+            Smoke(from: smokeStart, to: smokeEnd(at))
+                .stroke(Color(live ? Ink.celadon : Ink.ghost), style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+                .opacity(drag == .zero ? 1 : 0)
+            LineMac().frame(width: 108, height: 62).offset(x: mac.minX - 14, y: mac.minY)
+            LineScreen(name: name)
+                .frame(width: screen.width, height: screen.height)
+                .offset(x: screen.minX, y: screen.minY)
+                .gesture(DragGesture()
+                    .onChanged { drag = $0.translation }
+                    .onEnded { _ in
+                        let slot = nearest(screen)
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { drag = .zero }
+                        if slot != edge { pick(slot) }
+                    })
+                .onHover { inside in
+                    if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
+                }
+                .accessibilityLabel(Text("\(name) 在 Mac 的\(edge == "left" ? "左侧" : edge == "right" ? "右侧" : "上方")"))
+            Text("拖动屏幕，放到它在桌上的位置")
+                .font(.system(size: 11)).foregroundStyle(Color(Ink.faint))
+                .frame(width: 400)
+                .offset(y: 190)
+        }
+        .frame(width: 400, height: 214, alignment: .topLeading)
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: edge)
+    }
+
+    private var smokeStart: CGPoint {
+        switch edge {
+        case "left": CGPoint(x: mac.minX - 2, y: mac.midY - 6)
+        case "right": CGPoint(x: mac.maxX + 2, y: mac.midY - 6)
+        default: CGPoint(x: mac.midX, y: mac.minY - 2)
+        }
+    }
+
+    private func smokeEnd(_ r: CGRect) -> CGPoint {
+        switch edge {
+        case "left": CGPoint(x: r.maxX + 4, y: r.midY + 4)
+        case "right": CGPoint(x: r.minX - 4, y: r.midY + 4)
+        default: CGPoint(x: r.midX, y: r.maxY + 6)
+        }
+    }
+
+    private func nearest(_ r: CGRect) -> String {
+        Self.slots.min { a, b in
+            hypot(a.value.midX - r.midX, a.value.midY - r.midY) < hypot(b.value.midX - r.midX, b.value.midY - r.midY)
+        }!.key
+    }
+}
+
+/// One wisp of smoke between two points: a gentle S, never a straight line.
+struct Smoke: Shape {
+    let from: CGPoint
+    let to: CGPoint
+
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: from)
+        let dx = to.x - from.x, dy = to.y - from.y
+        let len = max(hypot(dx, dy), 1)
+        // perpendicular sway
+        let nx = -dy / len * 7, ny = dx / len * 7
+        p.addCurve(to: to,
+                   control1: CGPoint(x: from.x + dx * 0.33 + nx, y: from.y + dy * 0.33 + ny),
+                   control2: CGPoint(x: from.x + dx * 0.66 - nx, y: from.y + dy * 0.66 - ny))
+        return p
+    }
+}
+
+struct LineScreen: View {
+    let name: String
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4).fill(Color(Ink.sheet))
+            RoundedRectangle(cornerRadius: 4).strokeBorder(Color(Ink.text), lineWidth: 1.2)
+            Text(name).font(.serif(14)).lineLimit(1).minimumScaleFactor(0.5).padding(.horizontal, 8)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+/// A laptop in one line: the lid, then the base below it.
+struct LineMac: View {
+    var body: some View {
+        Canvas { ctx, size in
+            let lid = CGRect(x: 14, y: 0, width: 80, height: 50)
+            ctx.fill(Path(roundedRect: lid, cornerRadius: 3), with: .color(Color(Ink.sheet)))
+            ctx.stroke(Path(roundedRect: lid, cornerRadius: 3), with: .color(Color(Ink.text)), lineWidth: 1.2)
+            var base = Path()
+            base.move(to: CGPoint(x: 0, y: 54)); base.addLine(to: CGPoint(x: 108, y: 54))
+            base.addLine(to: CGPoint(x: 100, y: 60)); base.addLine(to: CGPoint(x: 8, y: 60)); base.closeSubpath()
+            ctx.stroke(base, with: .color(Color(Ink.text)), lineWidth: 1.2)
+        }
         .accessibilityHidden(true)
     }
 }
 
-/// A groove carved into the wood with a clay bead riding in it.
-struct GrooveSlider: View {
+/// While searching: what has been checked, and what is left to look at (RULES.md U13).
+struct Checklist: View {
+    let s: Status
+    private let address = lanAddress()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            item(ok: address != nil, address != nil ? "这台 Mac 已联网" : "这台 Mac 没有连上局域网",
+                 address.map { "\($0)" } ?? "检查 Wi-Fi 或网线")
+            item(ok: true, "Mac 上的 Wisp 在等待连接", "端口 24801")
+            VStack(alignment: .leading, spacing: 4) {
+                mark(ok: false)
+                    .overlay(alignment: .leading) {
+                        Text("还没有收到 \(s.paired) 的回应").font(.system(size: 14)).fixedSize().offset(x: 26)
+                    }
+                Text("那台电脑关机、睡眠或卡住了\n它连的是另一个网络\n代理软件的 TUN 模式挡住了局域网广播")
+                    .font(.system(size: 12)).foregroundStyle(Color(Ink.soft))
+                    .lineSpacing(4)
+                    .padding(.leading, 26)
+            }
+            if let drop = s.drop {
+                Text("上次断开 · \(drop.at.formatted(date: .omitted, time: .shortened)) · \(drop.reason)")
+                    .font(.system(size: 12)).foregroundStyle(Color(Ink.faint))
+                    .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private func item(ok: Bool, _ title: String, _ note: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            mark(ok: ok)
+            Text(title).font(.system(size: 14))
+            Text(note).font(.mono(11)).foregroundStyle(Color(Ink.faint))
+        }
+    }
+
+    private func mark(ok: Bool) -> some View {
+        Text(ok ? "✓" : "!")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color(ok ? Ink.celadon : Ink.ochre))
+            .frame(width: 14)
+    }
+}
+
+/// The open pairing code: six figures in the headline face over hairlines.
+struct PairingCode: View {
+    let s: Status
+
+    var body: some View {
+        VStack(spacing: 18) {
+            HStack(spacing: 10) {
+                ForEach(Array(s.code.enumerated()), id: \.offset) { i, ch in
+                    Text(String(ch))
+                        .font(.serif(34))
+                        .frame(width: 34)
+                        .padding(.bottom, 4)
+                        .overlay(alignment: .bottom) { Rectangle().fill(Color(Ink.text)).frame(height: 1) }
+                        .padding(.leading, i == 3 ? 12 : 0)
+                }
+            }
+            .accessibilityElement()
+            .accessibilityLabel(Text("配对码 " + s.code.map(String.init).joined(separator: " ")))
+            Text("还剩 \(s.codeSecondsLeft / 60):\(String(format: "%02d", s.codeSecondsLeft % 60)) · 还可以输错 \(s.codeTriesLeft) 次")
+                .font(.mono(12)).foregroundStyle(Color(Ink.soft))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// One hairline with a small ink bead on it.
+struct Hairslider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
@@ -1176,39 +977,18 @@ struct GrooveSlider: View {
         GeometryReader { g in
             let w = g.size.width
             let t = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
-            ZStack(alignment: .topLeading) {
-                Capsule()
-                    .fill(Color(hex: Clay.groove).shadow(.inner(color: Color(hex: 0x321C08, opacity: 0.55), radius: 3, y: 3)))
-                    .shadow(color: Color(hex: 0xFFEBCD, opacity: 0.3), radius: 0, y: 1)
-                    .frame(height: 12)
-                    .offset(y: 9)
-                Capsule()
-                    .fill(Color(hex: Clay.tealGlow))
-                    .shadow(color: Color(hex: Clay.tealGlow, opacity: 0.8), radius: 4)
-                    .frame(width: max(0, (w - 6) * t), height: 6)
-                    .offset(x: 3, y: 12)
-                ForEach(0..<5) { i in
-                    Capsule().fill(Color(hex: Clay.groove, opacity: 0.7))
-                        .frame(width: 2, height: 5)
-                        .offset(x: 14 + (w - 28) * CGFloat(i) / 4, y: 26)
-                }
-                Capsule()
-                    .fill(Color(hex: Clay.clay).shadow(.inner(color: Color(hex: Clay.clayShade), radius: 0, y: -4)))
-                    .overlay(Capsule().fill(.white.opacity(0.7)).frame(height: 2).padding(.horizontal, 7).offset(y: -9))
-                    .shadow(color: Color(hex: Clay.clayDrop), radius: 0, y: 4)
-                    .shadow(color: Color(hex: 0x321C08, opacity: 0.35), radius: 5, y: 7)
-                    .frame(width: 30, height: 26)
-                    .scaleEffect(dragging ? 1.08 : 1)
-                    .offset(x: (w - 30) * t, y: 2)
-                    .animation(dragging ? nil : .spring(response: 0.3, dampingFraction: 0.6), value: value)
-                    .animation(.spring(response: 0.25, dampingFraction: 0.6), value: dragging)
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Color(Ink.rule)).frame(height: 1)
+                Rectangle().fill(Color(Ink.text)).frame(width: max(0, w * t), height: 1.5)
+                Circle().fill(Color(Ink.text)).frame(width: dragging ? 12 : 10, height: dragging ? 12 : 10)
+                    .offset(x: (w - 10) * t)
             }
-            .frame(width: w, height: 34, alignment: .topLeading)
+            .frame(width: w, height: 20)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { d in
                     if !dragging { dragging = true; editing(true) }
-                    let x = min(max(0, (d.location.x - 15) / max(w - 30, 1)), 1)
+                    let x = min(max(0, d.location.x / max(w, 1)), 1)
                     let raw = range.lowerBound + x * (range.upperBound - range.lowerBound)
                     value = min(max((raw / step).rounded() * step, range.lowerBound), range.upperBound)
                 }
@@ -1217,7 +997,7 @@ struct GrooveSlider: View {
                     editing(false)
                 })
         }
-        .frame(height: 34)
+        .frame(height: 20)
         .accessibilityElement()
         .accessibilityValue(Text(value.formatted(.number.precision(.fractionLength(step < 1 ? 1 : 0)))))
         .accessibilityAdjustableAction { dir in
@@ -1229,179 +1009,14 @@ struct GrooveSlider: View {
     }
 }
 
-/// A clay knob in a carved channel.
-struct ClaySwitch: View {
-    let on: Bool
-    /// red for a switch that holds something back (pause), teal for one that adds something
-    var onColor: UInt32 = Clay.red
-    let flip: () -> Void
-
-    var body: some View {
-        Button(action: flip) {
-            ZStack(alignment: on ? .trailing : .leading) {
-                Capsule().fill(Color(hex: on ? onColor : Clay.clayDrop).shadow(.inner(color: Color(hex: 0x321C08, opacity: 0.5), radius: 3, y: 3)))
-                Circle()
-                    .fill(Color(hex: Clay.clay).shadow(.inner(color: Color(hex: Clay.clayShade), radius: 0, y: -3)))
-                    .shadow(color: Color(hex: Clay.clayDrop), radius: 0, y: 3)
-                    .frame(width: 26, height: 26)
-                    .padding(3)
-            }
-            .frame(width: 64, height: 32)
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .animation(.spring(response: 0.35, dampingFraction: 0.6), value: on)
-        .accessibilityValue(Text(on ? "开" : "关"))
-    }
-}
-
-/// Plain engraved words that act as buttons.
-struct CarvedLink: View {
-    let title: String
-    let act: () -> Void
-    @State private var hover = false
-
-    var body: some View {
-        Button(action: act) {
-            Text(title).font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(hex: hover ? 0x3E2A14 : Clay.engrave))
-                .shadow(color: Color(hex: 0xFFEBCD, opacity: 0.35), radius: 0, x: 0, y: 1)
-        }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
-    }
-}
-
-/// Paints the window itself the wall colour, title bar strip included.
-struct WindowWall: NSViewRepresentable {
+/// Paints the window itself paper, title bar strip included, in either appearance.
+struct WindowPaper: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let v = NSView()
         DispatchQueue.main.async {
-            v.window?.backgroundColor = NSColor(hex: Clay.wall)
-            v.window?.appearance = NSAppearance(named: .aqua)
+            v.window?.backgroundColor = Ink.paper
         }
         return v
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
-}
-
-// MARK: - Window
-
-struct SettingsView: View {
-    @StateObject private var core = Core()
-    @State private var speed = 1.0
-    @State private var scroll = 3.0
-    @State private var dragging = false
-    @State private var confirmUnpair = false
-    @State private var menuIcon = Installer.menuEnabled
-
-    var body: some View {
-        let s = core.status
-        VStack(spacing: 0) {
-            ZStack(alignment: .topLeading) {
-                DeskScene(mood: s.map(Mood.init) ?? .searching, edge: s?.edge ?? "top", name: s?.paired ?? "",
-                          bridge: (s?.bridge ?? 0) > 0,
-                          secret: s?.bridge.map { open in { core.send(["bridge", open > 0 ? "off" : "on"]) } })
-                WallSign(s: s, problem: core.problem)
-                    .padding(.leading, 24)
-                    .padding(.top, 16)
-            }
-            .frame(width: 460, height: 430)
-            drawer(s)
-                .frame(width: 460, height: 370)
-        }
-        .background(Color(hex: Clay.wall))
-        .background(WindowWall())
-        .overlay(alignment: .top) {
-            Text("wisp").font(.round(13)).tracking(1).foregroundStyle(Color(hex: 0x9A8167))
-                .offset(y: -22)
-                .accessibilityHidden(true)
-        }
-        .environment(\.colorScheme, .light)
-        .onChange(of: core.status) { _, s in
-            guard let s, !dragging else { return }
-            speed = s.speed
-            scroll = s.scroll
-        }
-    }
-
-    private func drawer(_ s: Status?) -> some View {
-        ZStack(alignment: .topLeading) {
-            Color(hex: Clay.wood)
-            Color(hex: Clay.woodBand).frame(height: 10)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("屏幕在哪一边").font(.system(size: 12, weight: .semibold)).tracking(2).engraved()
-                    .padding(.top, 22)
-                LayoutTray(edge: s?.edge ?? "top") { core.send(["set", "edge=\($0)"]) }
-                    .padding(.top, 10)
-                VStack(spacing: 18) {
-                    slider("鼠标速度", value: $speed, range: 0.2...5, step: 0.1, key: "speed")
-                    slider("滚动速度", value: $scroll, range: 0.5...10, step: 0.5, key: "scroll")
-                }
-                .padding(.top, 22)
-                Spacer(minLength: 0)
-                HStack(spacing: 14) {
-                    Text("菜单栏图标").font(.system(size: 12, weight: .semibold)).tracking(2).engraved()
-                        .frame(width: 70, alignment: .leading)
-                    ClaySwitch(on: menuIcon, onColor: Clay.teal) {
-                        menuIcon.toggle()
-                        let on = menuIcon
-                        Task.detached { Installer.setMenu(on) }
-                    }
-                    .accessibilityLabel(Text("在菜单栏显示图标"))
-                    Text("约多占 10 MB 内存").font(.system(size: 11)).foregroundStyle(Color(hex: Clay.engrave, opacity: 0.75))
-                    Spacer()
-                }
-                .padding(.bottom, 12)
-                HStack(spacing: 14) {
-                    Text("暂停切屏").font(.system(size: 12, weight: .semibold)).tracking(2).engraved()
-                        .frame(width: 70, alignment: .leading)
-                    ClaySwitch(on: s?.paused ?? false) { core.send([(s?.paused ?? false) ? "resume" : "pause"]) }
-                        .accessibilityLabel(Text("暂停切屏"))
-                    Spacer()
-                    footer(s)
-                }
-                .padding(.bottom, 24)
-            }
-            .padding(.horizontal, 24)
-            .disabled(s == nil)
-            .opacity(s == nil ? 0.55 : 1)
-        }
-    }
-
-    /// RULES.md P1, P4, P5, P8: start a code, cancel it, unpair; and quit (U11).
-    @ViewBuilder private func footer(_ s: Status?) -> some View {
-        if let s, !s.code.isEmpty {
-            CarvedLink(title: "取消配对码") { core.send(["pair-cancel"]) }
-        } else if let s, s.paired.isEmpty {
-            CarvedLink(title: "配对新电脑") { core.send(["pair"]) }
-        } else if let s {
-            CarvedLink(title: "换一台电脑") { core.send(["pair"]) }
-            CarvedLink(title: "解除配对") { confirmUnpair = true }
-                .confirmationDialog("解除与 \(s.paired) 的配对？", isPresented: $confirmUnpair) {
-                    Button("解除配对", role: .destructive) { core.send(["unpair"]) }
-                } message: {
-                    Text("这台 Mac 会断开与它的连接，以后要再用就得重新配对。")
-                }
-        }
-        CarvedLink(title: "退出") { core.quit() }
-    }
-
-    private func slider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, key: String) -> some View {
-        HStack(spacing: 14) {
-            Text(title).font(.system(size: 12, weight: .semibold)).tracking(2).engraved()
-                .frame(width: 70, alignment: .leading)
-            GrooveSlider(value: value, range: range, step: step) { editing in
-                dragging = editing
-                if !editing { core.send(["set", "\(key)=\(value.wrappedValue)"]) }
-            }
-            .accessibilityLabel(Text(title))
-            Text(value.wrappedValue.formatted(.number.precision(key == "speed" ? .fractionLength(1) : .fractionLength(0...1))))
-                .font(.round(15))
-                .foregroundStyle(Color(hex: Clay.cream))
-                .frame(width: 46, height: 28)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(hex: Clay.tray).shadow(.inner(color: Color(hex: 0x321C08, opacity: 0.45), radius: 2, y: 2))))
-        }
-    }
 }

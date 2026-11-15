@@ -19,13 +19,6 @@ struct StartupInput {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct PointF {
-    x: f32,
-    y: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 struct RectF {
     x: f32,
     y: f32,
@@ -50,11 +43,6 @@ struct Api {
     GdipSetPixelOffsetMode: unsafe extern "system" fn(Gp, i32) -> i32,
     GdipSetTextRenderingHint: unsafe extern "system" fn(Gp, i32) -> i32,
     GdipScaleWorldTransform: unsafe extern "system" fn(Gp, f32, f32, i32) -> i32,
-    GdipTranslateWorldTransform: unsafe extern "system" fn(Gp, f32, f32, i32) -> i32,
-    GdipSaveGraphics: unsafe extern "system" fn(Gp, *mut u32) -> i32,
-    GdipRestoreGraphics: unsafe extern "system" fn(Gp, u32) -> i32,
-    GdipSetClipPath: unsafe extern "system" fn(Gp, Gp, i32) -> i32,
-    GdipResetClip: unsafe extern "system" fn(Gp) -> i32,
     GdipCreatePath: unsafe extern "system" fn(i32, *mut Gp) -> i32,
     GdipDeletePath: unsafe extern "system" fn(Gp) -> i32,
     GdipAddPathLine: unsafe extern "system" fn(Gp, f32, f32, f32, f32) -> i32,
@@ -64,10 +52,6 @@ struct Api {
     GdipStartPathFigure: unsafe extern "system" fn(Gp) -> i32,
     GdipClosePathFigure: unsafe extern "system" fn(Gp) -> i32,
     GdipCreateSolidFill: unsafe extern "system" fn(u32, *mut Gp) -> i32,
-    GdipCreateLineBrush: unsafe extern "system" fn(*const PointF, *const PointF, u32, u32, i32, *mut Gp) -> i32,
-    GdipCreatePathGradientFromPath: unsafe extern "system" fn(Gp, *mut Gp) -> i32,
-    GdipSetPathGradientCenterColor: unsafe extern "system" fn(Gp, u32) -> i32,
-    GdipSetPathGradientSurroundColorsWithCount: unsafe extern "system" fn(Gp, *const u32, *mut i32) -> i32,
     GdipDeleteBrush: unsafe extern "system" fn(Gp) -> i32,
     GdipFillPath: unsafe extern "system" fn(Gp, Gp, Gp) -> i32,
     GdipCreatePen1: unsafe extern "system" fn(u32, f32, i32, *mut Gp) -> i32,
@@ -111,11 +95,6 @@ fn load() -> Option<Api> {
             GdipSetPixelOffsetMode: std::mem::transmute::<*mut c_void, _>(get("GdipSetPixelOffsetMode")?),
             GdipSetTextRenderingHint: std::mem::transmute::<*mut c_void, _>(get("GdipSetTextRenderingHint")?),
             GdipScaleWorldTransform: std::mem::transmute::<*mut c_void, _>(get("GdipScaleWorldTransform")?),
-            GdipTranslateWorldTransform: std::mem::transmute::<*mut c_void, _>(get("GdipTranslateWorldTransform")?),
-            GdipSaveGraphics: std::mem::transmute::<*mut c_void, _>(get("GdipSaveGraphics")?),
-            GdipRestoreGraphics: std::mem::transmute::<*mut c_void, _>(get("GdipRestoreGraphics")?),
-            GdipSetClipPath: std::mem::transmute::<*mut c_void, _>(get("GdipSetClipPath")?),
-            GdipResetClip: std::mem::transmute::<*mut c_void, _>(get("GdipResetClip")?),
             GdipCreatePath: std::mem::transmute::<*mut c_void, _>(get("GdipCreatePath")?),
             GdipDeletePath: std::mem::transmute::<*mut c_void, _>(get("GdipDeletePath")?),
             GdipAddPathLine: std::mem::transmute::<*mut c_void, _>(get("GdipAddPathLine")?),
@@ -125,10 +104,6 @@ fn load() -> Option<Api> {
             GdipStartPathFigure: std::mem::transmute::<*mut c_void, _>(get("GdipStartPathFigure")?),
             GdipClosePathFigure: std::mem::transmute::<*mut c_void, _>(get("GdipClosePathFigure")?),
             GdipCreateSolidFill: std::mem::transmute::<*mut c_void, _>(get("GdipCreateSolidFill")?),
-            GdipCreateLineBrush: std::mem::transmute::<*mut c_void, _>(get("GdipCreateLineBrush")?),
-            GdipCreatePathGradientFromPath: std::mem::transmute::<*mut c_void, _>(get("GdipCreatePathGradientFromPath")?),
-            GdipSetPathGradientCenterColor: std::mem::transmute::<*mut c_void, _>(get("GdipSetPathGradientCenterColor")?),
-            GdipSetPathGradientSurroundColorsWithCount: std::mem::transmute::<*mut c_void, _>(get("GdipSetPathGradientSurroundColorsWithCount")?),
             GdipDeleteBrush: std::mem::transmute::<*mut c_void, _>(get("GdipDeleteBrush")?),
             GdipFillPath: std::mem::transmute::<*mut c_void, _>(get("GdipFillPath")?),
             GdipCreatePen1: std::mem::transmute::<*mut c_void, _>(get("GdipCreatePen1")?),
@@ -163,9 +138,7 @@ const UNIT_PIXEL: i32 = 2;
 const CAP_ROUND: i32 = 2;
 const DASH_CAP_ROUND: i32 = 2;
 const JOIN_ROUND: i32 = 2;
-const WRAP_TILE_FLIP_XY: i32 = 3;
 const FILL_WINDING: i32 = 1;
-const COMBINE_INTERSECT: i32 = 1;
 const NO_WRAP: i32 = 0x1000;
 
 /// Starts GDI+ once for the process; it stays up until the process ends.
@@ -217,13 +190,6 @@ impl Path {
         unsafe { (api().GdipAddPathBezier)(self.raw, self.at.0, self.at.1, c1.0, c1.1, c2.0, c2.1, x, y) };
         self.at = (x, y);
         self
-    }
-
-    pub fn quad_to(self, c: (f32, f32), x: f32, y: f32) -> Path {
-        let (x0, y0) = self.at;
-        let c1 = (x0 + 2.0 / 3.0 * (c.0 - x0), y0 + 2.0 / 3.0 * (c.1 - y0));
-        let c2 = (x + 2.0 / 3.0 * (c.0 - x), y + 2.0 / 3.0 * (c.1 - y));
-        self.curve_to(c1, c2, x, y)
     }
 
     pub fn close(self) -> Path {
@@ -323,62 +289,10 @@ impl Canvas {
         Canvas { g }
     }
 
-    /// Runs `f` with the origin moved and the scale changed, then puts both back.
-    pub fn within(&self, dx: f32, dy: f32, s: f32, f: impl FnOnce(&Canvas)) {
-        let mut state = 0;
-        unsafe {
-            (api().GdipSaveGraphics)(self.g, &mut state);
-            (api().GdipTranslateWorldTransform)(self.g, dx, dy, 0);
-            (api().GdipScaleWorldTransform)(self.g, s, s, 0);
-        }
-        f(self);
-        unsafe { (api().GdipRestoreGraphics)(self.g, state) };
-    }
-
-    /// Runs `f` with drawing limited to inside `path`.
-    pub fn clipped(&self, path: &Path, f: impl FnOnce(&Canvas)) {
-        let mut state = 0;
-        unsafe {
-            (api().GdipSaveGraphics)(self.g, &mut state);
-            (api().GdipSetClipPath)(self.g, path.raw, COMBINE_INTERSECT);
-        }
-        f(self);
-        unsafe {
-            (api().GdipResetClip)(self.g);
-            (api().GdipRestoreGraphics)(self.g, state);
-        }
-    }
-
     pub fn fill(&self, path: &Path, color: u32) {
         let mut b = ptr::null_mut();
         unsafe {
             (api().GdipCreateSolidFill)(color, &mut b);
-            (api().GdipFillPath)(self.g, b, path.raw);
-            (api().GdipDeleteBrush)(b);
-        }
-    }
-
-    /// Fills with a straight gradient from `from` to `to`.
-    pub fn fill_linear(&self, path: &Path, from: (f32, f32), to: (f32, f32), c1: u32, c2: u32) {
-        let (p1, p2) = (PointF { x: from.0, y: from.1 }, PointF { x: to.0, y: to.1 });
-        let mut b = ptr::null_mut();
-        unsafe {
-            (api().GdipCreateLineBrush)(&p1, &p2, c1, c2, WRAP_TILE_FLIP_XY, &mut b);
-            (api().GdipFillPath)(self.g, b, path.raw);
-            (api().GdipDeleteBrush)(b);
-        }
-    }
-
-    /// A soft blot: `color` in the middle of the ellipse, fading to nothing at its rim.
-    pub fn soft(&self, x: f32, y: f32, w: f32, h: f32, color: u32) {
-        let path = Path::ellipse(x, y, w, h);
-        let mut b = ptr::null_mut();
-        let clear = [color & 0x00FF_FFFF];
-        let mut n = 1;
-        unsafe {
-            (api().GdipCreatePathGradientFromPath)(path.raw, &mut b);
-            (api().GdipSetPathGradientCenterColor)(b, color);
-            (api().GdipSetPathGradientSurroundColorsWithCount)(b, clear.as_ptr(), &mut n);
             (api().GdipFillPath)(self.g, b, path.raw);
             (api().GdipDeleteBrush)(b);
         }

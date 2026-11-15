@@ -82,7 +82,7 @@ struct Request {
 impl Request {
     fn new() -> io::Result<Request> {
         if !is_open() {
-            return Err(io::Error::other("开发者通道没有开启（在 Wisp 设置里点两下花盆、一下茶杯）"));
+            return Err(io::Error::other("开发者通道没有开启（在 Wisp 设置的“···”菜单里打开）"));
         }
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
